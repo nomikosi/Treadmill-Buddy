@@ -1,0 +1,55 @@
+plugins {
+    id 'java'
+    id 'org.jetbrains.intellij.platform' version '2.16.0'
+}
+
+group = 'com.codex'
+version = '0.1.0'
+
+repositories {
+    mavenCentral()
+    intellijPlatform {
+        defaultRepositories()
+    }
+}
+
+dependencies {
+    intellijPlatform {
+        intellijIdea('2024.3.6')
+    }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+intellijPlatform {
+    buildSearchableOptions = false
+    pluginConfiguration {
+        id = 'com.codex.desktreadmill'
+        name = 'Treadmill Buddy'
+        version = project.version
+        description = '''
+            <p><b>Treadmill Buddy</b> is a digital stopwatch for developers who walk while they code.</p>
+            <p>Track under-desk treadmill sessions from inside IntelliJ IDEA with a large digital clock, floating movable clock, saved sessions, distance, steps, calories, and goal countdowns.</p>
+            <ul>
+                <li><b>Marathon:</b> open-ended count-up sessions.</li>
+                <li><b>Calorie burn:</b> count down from the time needed to burn a calorie target.</li>
+                <li><b>KG burn:</b> count down from the time needed to burn a target mass in kg.</li>
+            </ul>
+            <p>The plugin includes selectable calorie algorithms, a Settings page for profile/defaults, live speed recalculation, live calorie-algorithm recalculation, saved session deletion, and configurable auto-pause after keyboard inactivity.</p>
+            <p>License: Apache License 2.0</p>
+        '''.stripIndent().trim()
+        ideaVersion {
+            sinceBuild = '243'
+            untilBuild = provider { null }
+        }
+        vendor {
+            name = 'Nomikosi Consulting'
+            email = 'hello@nomikosi.dev'
+            url = 'https://github.com/nomikosi/Treadmill-Buddy'
+        }
+    }
+}

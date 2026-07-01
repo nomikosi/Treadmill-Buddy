@@ -1,0 +1,55 @@
+<!--
+Copyright (c) 2026 Nomikosi Consulting
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+
+<idea-plugin>
+    <!-- NOTE: the id is permanent once the plugin is published. -->
+    <id>com.codex.desktreadmill</id>
+    <name>Treadmill Buddy</name>
+    <vendor email="hello@nomikosi.dev" url="https://github.com/nomikosi/Treadmill-Buddy">Nomikosi Consulting</vendor>
+    <category>Code Tools</category>
+
+    <description><![CDATA[
+        <p><b>Treadmill Buddy</b> is a digital stopwatch for developers who walk while they code.</p>
+        <p>Track under-desk treadmill sessions from inside IntelliJ IDEA with a large digital clock, floating movable clock, saved sessions, distance, steps, calories, and goal countdowns.</p>
+        <ul>
+            <li><b>Marathon:</b> open-ended count-up sessions.</li>
+            <li><b>Calorie burn:</b> count down from the time needed to burn a calorie target.</li>
+            <li><b>KG burn:</b> count down from the time needed to burn a target mass in kg.</li>
+        </ul>
+        <p>The plugin includes selectable calorie algorithms, a Settings page for profile/defaults, live speed recalculation, live calorie-algorithm recalculation, saved session deletion, and configurable auto-pause after keyboard inactivity.</p>
+        <p>License: Apache License 2.0</p>
+    ]]></description>
+
+    <change-notes><![CDATA[
+        <ul>
+            <li>Initial Treadmill Buddy release with digital stopwatch, floating clock, saved sessions, calorie algorithms, countdown modes, and configurable profile settings.</li>
+        </ul>
+    ]]></change-notes>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow
+                id="Treadmill Buddy"
+                anchor="right"
+                icon="/icons/treadmill.svg"
+                factoryClass="com.codex.desktreadmill.TreadmillToolWindowFactory"/>
+        <applicationConfigurable
+                instance="com.codex.desktreadmill.settings.TreadmillConfigurable"
+                displayName="Treadmill Buddy"/>
+        <postStartupActivity implementation="com.codex.desktreadmill.startup.TreadmillStartupActivity"/>
+    </extensions>
+</idea-plugin>
