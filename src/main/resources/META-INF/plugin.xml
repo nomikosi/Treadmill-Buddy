@@ -34,6 +34,11 @@ limitations under the License.
 
     <change-notes><![CDATA[
         <ul>
+            <li>1.0.1:
+                <ul>
+                    <li>Replace a deprecated file-chooser API flagged by the Marketplace verifier.</li>
+                </ul>
+            </li>
             <li>1.0.0:
                 <ul>
                     <li>Metric / imperial unit setting (km/h-kg-cm or mph-lb-in), switchable any time; stored data stays metric and converts in the UI.</li>

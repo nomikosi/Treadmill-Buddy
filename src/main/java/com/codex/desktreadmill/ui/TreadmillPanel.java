@@ -899,9 +899,9 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         }
         FileSaverDescriptor descriptor = new FileSaverDescriptor(
                 "Export Treadmill Sessions",
-                "Save all saved sessions as a CSV file",
-                "csv"
+                "Save all saved sessions as a CSV file"
         );
+        descriptor.withExtensionFilter("csv");
         VirtualFileWrapper wrapper = FileChooserFactory.getInstance()
                 .createSaveFileDialog(descriptor, project)
                 .save((VirtualFile) null, "treadmill-sessions.csv");
