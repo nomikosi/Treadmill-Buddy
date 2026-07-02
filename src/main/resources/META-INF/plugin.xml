@@ -34,6 +34,11 @@ limitations under the License.
 
     <change-notes><![CDATA[
         <ul>
+            <li>1.0.2:
+                <ul>
+                    <li>Fully remove the deprecated file-chooser constructor reference flagged by the Marketplace verifier (resolved at runtime for 2024.3 and 2025.1+ compatibility).</li>
+                </ul>
+            </li>
             <li>1.0.1:
                 <ul>
                     <li>Replace a deprecated file-chooser API flagged by the Marketplace verifier.</li>

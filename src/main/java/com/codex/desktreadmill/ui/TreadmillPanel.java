@@ -897,7 +897,7 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
                     TreadmillBundle.message("notification.export.none"));
             return;
         }
-        FileSaverDescriptor descriptor = new FileSaverDescriptor(
+        FileSaverDescriptor descriptor = createSaveDescriptor(
                 "Export Treadmill Sessions",
                 "Save all saved sessions as a CSV file"
         );
@@ -936,6 +936,28 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
                     TreadmillBundle.message("notification.export.done", sessions.size(), wrapper.getFile().getName()));
         } catch (IOException exception) {
             showError("Could not write CSV file: " + exception.getMessage());
+        }
+    }
+
+    /**
+     * 2024.3 ships only the varargs FileSaverDescriptor constructor, which 2025.1+
+     * deprecates in favor of the two-arg one that 2024.3 lacks. A direct call to
+     * either breaks one side (deprecation warning vs. NoSuchMethodError), so pick
+     * the constructor reflectively at runtime.
+     */
+    private static FileSaverDescriptor createSaveDescriptor(String title, String description) {
+        try {
+            try {
+                return FileSaverDescriptor.class
+                        .getConstructor(String.class, String.class)
+                        .newInstance(title, description);
+            } catch (NoSuchMethodException onlyVarargsAvailable) {
+                return FileSaverDescriptor.class
+                        .getConstructor(String.class, String.class, String[].class)
+                        .newInstance(title, description, new String[0]);
+            }
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalStateException("No usable FileSaverDescriptor constructor", exception);
         }
     }
 
