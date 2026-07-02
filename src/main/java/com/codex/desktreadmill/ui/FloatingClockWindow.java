@@ -1,5 +1,6 @@
 package com.codex.desktreadmill.ui;
 
+import com.codex.desktreadmill.settings.TreadmillSettings;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.wm.WindowManager;
 import com.intellij.ui.JBColor;
@@ -9,17 +10,24 @@ import com.intellij.util.ui.JBUI;
 import javax.swing.JButton;
 import javax.swing.JDialog;
 import javax.swing.JPanel;
+import javax.swing.JToggleButton;
 import javax.swing.SwingConstants;
 import java.awt.BorderLayout;
+import java.awt.Color;
 import java.awt.Component;
-import java.awt.Cursor;
 import java.awt.FlowLayout;
 import java.awt.Frame;
+import java.awt.GraphicsDevice;
+import java.awt.GraphicsEnvironment;
 import java.awt.Point;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 
 public final class FloatingClockWindow {
+    private static final Color PIN_ENABLED = new JBColor(new Color(0x2E7D32), new Color(0x6FBF73));
+    private static final Color PIN_DISABLED = new JBColor(new Color(0xC62828), new Color(0xE57373));
+
+    private final TreadmillSettings settings = TreadmillSettings.getInstance();
     private final JDialog dialog;
     private final DigitalClockDisplay display = new DigitalClockDisplay();
     private final JButton pauseResumeButton = new JButton("Start");
@@ -41,7 +49,10 @@ public final class FloatingClockWindow {
             dialog.toFront();
             return;
         }
-        if (dialog.getLocation().x == 0 && dialog.getLocation().y == 0) {
+        Point stored = storedLocation();
+        if (stored != null) {
+            dialog.setLocation(stored);
+        } else if (dialog.getLocation().x == 0 && dialog.getLocation().y == 0) {
             dialog.setLocationRelativeTo(dialog.getOwner());
         }
         dialog.setVisible(true);
@@ -55,11 +66,28 @@ public final class FloatingClockWindow {
         pauseResumeButton.setText(text);
     }
 
+    public void dispose() {
+        dialog.dispose();
+    }
+
+    private Point storedLocation() {
+        if (!settings.hasFloatingClockLocation()) {
+            return null;
+        }
+        Point point = new Point(settings.getFloatingClockX(), settings.getFloatingClockY());
+        // A remembered position can be off-screen after a monitor change.
+        for (GraphicsDevice device : GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices()) {
+            if (device.getDefaultConfiguration().getBounds().contains(point)) {
+                return point;
+            }
+        }
+        return null;
+    }
+
     private JPanel createContent(Runnable pauseResumeAction, Runnable saveAction) {
         JPanel content = new JPanel(new BorderLayout());
         JPanel titleBar = new JPanel(new BorderLayout());
         titleBar.setBorder(JBUI.Borders.empty(4, 8));
-        titleBar.setCursor(Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR));
 
         JBLabel title = new JBLabel("Treadmill Buddy Clock");
         title.setHorizontalAlignment(SwingConstants.LEFT);
@@ -71,9 +99,26 @@ public final class FloatingClockWindow {
         pauseResumeButton.addActionListener(event -> pauseResumeAction.run());
         saveButton.addActionListener(event -> saveAction.run());
 
+        JToggleButton pinButton = new JToggleButton();
+        pinButton.setFocusable(false);
+        pinButton.setToolTipText("Keep the clock on top of all windows");
+        pinButton.setSelected(settings.isFloatingClockPinned());
+        if (pinButton.isSelected() && dialog.isAlwaysOnTopSupported()) {
+            dialog.setAlwaysOnTop(true);
+        }
+        pinButton.addActionListener(event -> {
+            if (dialog.isAlwaysOnTopSupported()) {
+                dialog.setAlwaysOnTop(pinButton.isSelected());
+            }
+            settings.setFloatingClockPinned(pinButton.isSelected());
+            updatePinButton(pinButton);
+        });
+        updatePinButton(pinButton);
+
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
         actions.add(pauseResumeButton);
         actions.add(saveButton);
+        actions.add(pinButton);
         actions.add(close);
 
         titleBar.add(title, BorderLayout.CENTER);
@@ -84,6 +129,16 @@ public final class FloatingClockWindow {
         content.add(titleBar, BorderLayout.NORTH);
         content.add(display, BorderLayout.CENTER);
         return content;
+    }
+
+    private static void updatePinButton(JToggleButton pinButton) {
+        if (pinButton.isSelected()) {
+            pinButton.setText("Pinned");
+            pinButton.setForeground(PIN_ENABLED);
+        } else {
+            pinButton.setText("Unpinned");
+            pinButton.setForeground(PIN_DISABLED);
+        }
     }
 
     private void installDrag(Component component) {
@@ -109,6 +164,8 @@ public final class FloatingClockWindow {
             @Override
             public void mouseReleased(MouseEvent event) {
                 dragStart = null;
+                Point location = dialog.getLocation();
+                settings.setFloatingClockLocation(location.x, location.y);
             }
         };
         component.addMouseListener(adapter);

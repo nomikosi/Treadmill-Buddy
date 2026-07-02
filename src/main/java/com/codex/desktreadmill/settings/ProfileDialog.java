@@ -1,5 +1,6 @@
 package com.codex.desktreadmill.settings;
 
+import com.codex.desktreadmill.engine.WorkoutEngine;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.ValidationInfo;
@@ -47,5 +48,10 @@ public final class ProfileDialog extends DialogWrapper {
         settings.setProfile(profilePanel.getProfile());
         settings.setSelectedAlgorithm(profilePanel.getAlgorithm());
         settings.setAutoPauseMinutes(profilePanel.getAutoPauseMinutes());
+        settings.setMoveReminderMinutes(profilePanel.getMoveReminderMinutes());
+        settings.setUnitSystem(profilePanel.getUnitSystem());
+        settings.setDailyGoalType(profilePanel.getDailyGoalType());
+        settings.setDailyGoalValue(profilePanel.getDailyGoalValueMetric());
+        WorkoutEngine.getInstance().refreshListeners();
     }
 }

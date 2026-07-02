@@ -1,6 +1,8 @@
 package com.codex.desktreadmill.settings;
 
 import com.codex.desktreadmill.calories.CalorieAlgorithm;
+import com.codex.desktreadmill.model.GoalType;
+import com.codex.desktreadmill.model.UnitSystem;
 import com.codex.desktreadmill.model.UserProfile;
 import com.codex.desktreadmill.ui.ComboHelp;
 import com.intellij.openapi.ui.ComboBox;
@@ -13,23 +15,39 @@ import javax.swing.JPanel;
 import java.awt.BorderLayout;
 
 public final class ProfilePanel {
+    private final ComboBox<UnitSystem> unitsCombo = new ComboBox<>(UnitSystem.values());
     private final JBTextField weightField = new JBTextField();
-    private final JBTextField ageField = new JBTextField();
     private final JBTextField heightField = new JBTextField();
     private final JBTextField autoPauseField = new JBTextField();
+    private final JBTextField moveReminderField = new JBTextField();
     private final ComboBox<CalorieAlgorithm> algorithmCombo = new ComboBox<>(CalorieAlgorithm.values());
+    private final ComboBox<GoalType> goalTypeCombo = new ComboBox<>(GoalType.values());
+    private final JBTextField goalValueField = new JBTextField();
+    private final JBLabel weightLabel = new JBLabel();
+    private final JBLabel heightLabel = new JBLabel();
+    private final JBLabel goalValueLabel = new JBLabel("Goal value");
     private final JPanel panel;
+
+    /** Units currently reflected by the field texts, so a combo switch can convert them. */
+    private UnitSystem fieldUnits = UnitSystem.METRIC;
 
     public ProfilePanel() {
         ComboHelp.configureAlgorithmCombo(algorithmCombo, this::getAlgorithm);
+        unitsCombo.addActionListener(event -> unitsSelectionChanged());
+        goalTypeCombo.addActionListener(event -> goalTypeChanged());
         panel = FormBuilder.createFormBuilder()
-                .addLabeledComponent(new JBLabel("Weight (kg)"), weightField, 1, false)
-                .addLabeledComponent(new JBLabel("Age"), ageField, 1, false)
-                .addLabeledComponent(new JBLabel("Height (cm)"), heightField, 1, false)
+                .addLabeledComponent(new JBLabel("Units"), unitsCombo, 1, false)
+                .addLabeledComponent(weightLabel, weightField, 1, false)
+                .addLabeledComponent(heightLabel, heightField, 1, false)
                 .addLabeledComponent(new JBLabel("Default calorie algorithm"), algorithmCombo, 1, false)
-                .addLabeledComponent(new JBLabel("Auto-pause idle typing (minutes)"), autoPauseField, 1, false)
+                .addLabeledComponent(new JBLabel("Auto-pause idle sessions (minutes, 0 = off)"), autoPauseField, 1, false)
+                .addLabeledComponent(new JBLabel("Remind me to move (minutes, 0 = off)"), moveReminderField, 1, false)
+                .addLabeledComponent(new JBLabel("Daily goal"), goalTypeCombo, 1, false)
+                .addLabeledComponent(goalValueLabel, goalValueField, 1, false)
                 .addComponentFillVertically(new JPanel(new BorderLayout()), 0)
                 .getPanel();
+        updateUnitLabels();
+        goalTypeChanged();
     }
 
     public JComponent getComponent() {
@@ -37,18 +55,29 @@ public final class ProfilePanel {
     }
 
     public void setValues(UserProfile profile, CalorieAlgorithm algorithm) {
-        weightField.setText(format(profile.weightKg));
-        ageField.setText(String.valueOf(profile.age));
-        heightField.setText(format(profile.heightCm));
+        TreadmillSettings settings = TreadmillSettings.getInstance();
+        fieldUnits = settings.getUnitSystem();
+        unitsCombo.setSelectedItem(fieldUnits);
+        weightField.setText(format(fieldUnits.weightFromKg(profile.weightKg)));
+        heightField.setText(format(fieldUnits.heightFromCm(profile.heightCm)));
         algorithmCombo.setSelectedItem(algorithm);
-        autoPauseField.setText(String.valueOf(TreadmillSettings.getInstance().getAutoPauseMinutes()));
+        autoPauseField.setText(String.valueOf(settings.getAutoPauseMinutes()));
+        moveReminderField.setText(String.valueOf(settings.getMoveReminderMinutes()));
+        GoalType goalType = settings.getDailyGoalType();
+        goalTypeCombo.setSelectedItem(goalType);
+        double goalValue = settings.getDailyGoalValue();
+        goalValueField.setText(goalValue > 0
+                ? format(goalType == GoalType.DISTANCE ? fieldUnits.distanceFromKm(goalValue) : goalValue)
+                : "");
+        updateUnitLabels();
+        goalTypeChanged();
     }
 
     public UserProfile getProfile() {
+        UnitSystem units = getUnitSystem();
         UserProfile profile = new UserProfile();
-        profile.weightKg = parseDouble(weightField.getText());
-        profile.age = parseInt(ageField.getText());
-        profile.heightCm = parseDouble(heightField.getText());
+        profile.weightKg = units.weightToKg(parseDouble(weightField.getText()));
+        profile.heightCm = units.heightToCm(parseDouble(heightField.getText()));
         profile.completed = true;
         return profile;
     }
@@ -58,37 +87,123 @@ public final class ProfilePanel {
         return selected instanceof CalorieAlgorithm ? (CalorieAlgorithm) selected : CalorieAlgorithm.ACSM_FLAT;
     }
 
+    public UnitSystem getUnitSystem() {
+        Object selected = unitsCombo.getSelectedItem();
+        return selected instanceof UnitSystem ? (UnitSystem) selected : UnitSystem.METRIC;
+    }
+
+    public GoalType getDailyGoalType() {
+        Object selected = goalTypeCombo.getSelectedItem();
+        return selected instanceof GoalType ? (GoalType) selected : GoalType.NONE;
+    }
+
+    /** Goal value converted to metric terms (steps, km, or kcal). */
+    public double getDailyGoalValueMetric() {
+        GoalType type = getDailyGoalType();
+        if (type == GoalType.NONE) {
+            return 0.0;
+        }
+        double value = parseDouble(goalValueField.getText());
+        if (value <= 0) {
+            return 0.0;
+        }
+        return type == GoalType.DISTANCE ? getUnitSystem().distanceToKm(value) : value;
+    }
+
     public int getAutoPauseMinutes() {
         return parseInt(autoPauseField.getText());
     }
 
+    public int getMoveReminderMinutes() {
+        return parseInt(moveReminderField.getText());
+    }
+
     public String validateInput() {
-        double weight = parseDouble(weightField.getText());
-        int age = parseInt(ageField.getText());
-        double height = parseDouble(heightField.getText());
-        if (weight < 20 || weight > 300) {
-            return "Enter a weight between 20 and 300 kg.";
+        UnitSystem units = getUnitSystem();
+        double weightKg = units.weightToKg(parseDouble(weightField.getText()));
+        double heightCm = units.heightToCm(parseDouble(heightField.getText()));
+        if (weightKg < 20 || weightKg > 300) {
+            return String.format("Enter a weight between %.0f and %.0f %s.",
+                    units.weightFromKg(20), units.weightFromKg(300), units.weightUnit());
         }
-        if (age < 10 || age > 120) {
-            return "Enter an age between 10 and 120.";
-        }
-        if (height < 90 || height > 250) {
-            return "Enter a height between 90 and 250 cm.";
+        if (heightCm < 90 || heightCm > 250) {
+            return String.format("Enter a height between %.0f and %.0f %s.",
+                    units.heightFromCm(90), units.heightFromCm(250), units.heightUnit());
         }
         int autoPauseMinutes = parseInt(autoPauseField.getText());
         if (autoPauseMinutes < 0 || autoPauseMinutes > 240) {
             return "Enter auto-pause minutes between 0 and 240. Use 0 to disable it.";
         }
+        int moveReminderMinutes = parseInt(moveReminderField.getText());
+        if (moveReminderMinutes < 0 || moveReminderMinutes > 480) {
+            return "Enter move-reminder minutes between 0 and 480. Use 0 to disable it.";
+        }
+        if (getDailyGoalType() != GoalType.NONE && parseDouble(goalValueField.getText()) <= 0) {
+            return "Enter a daily goal value greater than zero, or set the goal to None.";
+        }
         return null;
     }
 
-    public boolean isModified(UserProfile profile, CalorieAlgorithm algorithm, int autoPauseMinutes) {
+    public boolean isModified(TreadmillSettings settings) {
+        UserProfile profile = settings.getProfile();
         UserProfile edited = getProfile();
         return Math.abs(edited.weightKg - profile.weightKg) > 0.001
-                || edited.age != profile.age
                 || Math.abs(edited.heightCm - profile.heightCm) > 0.001
-                || getAlgorithm() != algorithm
-                || getAutoPauseMinutes() != autoPauseMinutes;
+                || getAlgorithm() != settings.getSelectedAlgorithm()
+                || getAutoPauseMinutes() != settings.getAutoPauseMinutes()
+                || getMoveReminderMinutes() != settings.getMoveReminderMinutes()
+                || getUnitSystem() != settings.getUnitSystem()
+                || getDailyGoalType() != settings.getDailyGoalType()
+                || Math.abs(getDailyGoalValueMetric() - settings.getDailyGoalValue()) > 0.001;
+    }
+
+    private void unitsSelectionChanged() {
+        UnitSystem units = getUnitSystem();
+        if (units == fieldUnits) {
+            return;
+        }
+        convertField(weightField, fieldUnits::weightToKg, units::weightFromKg);
+        convertField(heightField, fieldUnits::heightToCm, units::heightFromCm);
+        if (getDailyGoalType() == GoalType.DISTANCE) {
+            convertField(goalValueField, fieldUnits::distanceToKm, units::distanceFromKm);
+        }
+        fieldUnits = units;
+        updateUnitLabels();
+    }
+
+    private static void convertField(
+            JBTextField field,
+            java.util.function.DoubleUnaryOperator toMetric,
+            java.util.function.DoubleUnaryOperator fromMetric
+    ) {
+        double value = parseDouble(field.getText());
+        if (value > 0) {
+            field.setText(format(fromMetric.applyAsDouble(toMetric.applyAsDouble(value))));
+        }
+    }
+
+    private void updateUnitLabels() {
+        UnitSystem units = getUnitSystem();
+        weightLabel.setText("Weight (" + units.weightUnit() + ")");
+        heightLabel.setText("Height (" + units.heightUnit() + ")");
+        updateGoalValueLabel();
+    }
+
+    private void goalTypeChanged() {
+        goalValueField.setEnabled(getDailyGoalType() != GoalType.NONE);
+        updateGoalValueLabel();
+    }
+
+    private void updateGoalValueLabel() {
+        GoalType type = getDailyGoalType();
+        UnitSystem units = getUnitSystem();
+        String suffix = switch (type) {
+            case STEPS -> " (steps)";
+            case DISTANCE -> " (" + units.distanceUnit() + ")";
+            case CALORIES -> " (kcal)";
+            case NONE -> "";
+        };
+        goalValueLabel.setText("Goal value" + suffix);
     }
 
     private static double parseDouble(String text) {

@@ -1,5 +1,7 @@
 package com.codex.desktreadmill.ui;
 
+import com.intellij.ui.JBColor;
+
 import javax.swing.JComponent;
 import java.awt.BasicStroke;
 import java.awt.Color;
@@ -11,10 +13,10 @@ import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 
 public final class DigitalClockDisplay extends JComponent {
-    private static final Color BACKGROUND = new Color(238, 243, 247);
-    private static final Color SEGMENT_ON = new Color(32, 38, 58);
-    private static final Color SEGMENT_OFF = new Color(216, 224, 232);
-    private static final Color COLON = new Color(126, 148, 166);
+    private static final Color BACKGROUND = new JBColor(new Color(238, 243, 247), new Color(43, 45, 48));
+    private static final Color SEGMENT_ON = new JBColor(new Color(32, 38, 58), new Color(220, 226, 240));
+    private static final Color SEGMENT_OFF = new JBColor(new Color(216, 224, 232), new Color(62, 66, 72));
+    private static final Color COLON = new JBColor(new Color(126, 148, 166), new Color(140, 152, 168));
 
     private String dayPrefix = "";
     private String timeText = "00:00:00";

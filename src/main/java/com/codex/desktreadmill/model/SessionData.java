@@ -6,6 +6,7 @@ public class SessionData {
     public String modeId = SessionMode.MARATHON.name();
     public String algorithmId = "ACSM_FLAT";
     public double speedKmh = 3.0;
+    public double inclinePercent = 0.0;
     public double targetCalories = 0.0;
     public double targetFatKg = 0.0;
     public long targetSeconds = 0L;
@@ -15,6 +16,7 @@ public class SessionData {
     public long steps = 0L;
     public double calories = 0.0;
     public boolean completed = false;
+    public long createdMillis = 0L;
 
     public SessionData copy() {
         SessionData copy = new SessionData();
@@ -23,6 +25,7 @@ public class SessionData {
         copy.modeId = modeId;
         copy.algorithmId = algorithmId;
         copy.speedKmh = speedKmh;
+        copy.inclinePercent = inclinePercent;
         copy.targetCalories = targetCalories;
         copy.targetFatKg = targetFatKg;
         copy.targetSeconds = targetSeconds;
@@ -32,6 +35,7 @@ public class SessionData {
         copy.steps = steps;
         copy.calories = calories;
         copy.completed = completed;
+        copy.createdMillis = createdMillis;
         return copy;
     }
 }

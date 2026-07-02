@@ -1,0 +1,33 @@
+<svg width="40" height="40" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="6" y1="4" x2="34" y2="36" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2A4472"/>
+      <stop offset="1" stop-color="#12233C"/>
+    </linearGradient>
+    <linearGradient id="green" x1="24" y1="11" x2="35" y2="33" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#D7FF3F"/>
+      <stop offset="1" stop-color="#56C916"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="13" y1="9" x2="22" y2="17" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#32D2FF"/>
+      <stop offset="1" stop-color="#1473F7"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="36" height="36" rx="8" fill="url(#bg)" stroke="#4A5E7E" stroke-width="1"/>
+  <path fill="#F7FAFF" d="M7.5 16.5h17.8c1 0 1.8.8 1.8 1.8v.7c0 1-.8 1.8-1.8 1.8H7.5c-1 0-1.8-.8-1.8-1.8v-.7c0-1 .8-1.8 1.8-1.8Z"/>
+  <path fill="#48546B" d="M11 20h2.7v10.7H11zM23.2 20h2.7v10.7h-2.7z"/>
+  <path fill="#232B3C" d="M9 29.7h18.2l6.1 3.3H8.5c-1.1 0-2-.9-2-2 0-.7.5-1.3 1.2-1.3H9Z"/>
+  <path fill="#48566E" d="M8.7 27.2h19.7c1.5 0 2.8 1.2 2.8 2.8 0 1.6-1.3 2.9-2.8 2.9H8.7c-1.6 0-2.8-1.3-2.8-2.9 0-1.5 1.2-2.8 2.8-2.8Z"/>
+  <path fill="#1A2334" d="M10 28.4h16.8c1 .1 1.8.8 1.8 1.7 0 1-.8 1.8-1.8 1.8H10c-1 0-1.8-.8-1.8-1.8 0-.9.8-1.6 1.8-1.7Z"/>
+  <path fill="#A5F22B" d="M7.8 31.2h20.5c.6 0 1-.4 1-.9 0-.4-.3-.8-.7-.9L8 29.6c-.5.1-.9.5-.9.9 0 .4.3.7.7.7Z"/>
+  <path fill="#1A2334" d="M12 7.5h10.4c1.1 0 2 .9 2 2v5.8c0 1.1-.9 2-2 2H12c-1.1 0-2-.9-2-2V9.5c0-1.1.9-2 2-2Z"/>
+  <path fill="#C4CEDC" d="M11.7 7h10.8c1.4 0 2.5 1.1 2.5 2.5v6.1c0 1.4-1.1 2.5-2.5 2.5H11.7c-1.4 0-2.5-1.1-2.5-2.5V9.5c0-1.4 1.1-2.5 2.5-2.5Zm.5 1.7c-.7 0-1.2.5-1.2 1.2v5.3c0 .7.5 1.2 1.2 1.2H22c.7 0 1.2-.5 1.2-1.2V9.9c0-.7-.5-1.2-1.2-1.2h-9.8Z"/>
+  <path fill="url(#screen)" d="M11.7 9.2h10.8v6.1H11.7z"/>
+  <path fill="#1D2739" d="M13.4 18h7.5l1.7 1.3H11.7z"/>
+  <path fill="url(#green)" d="M27.4 12.7c4 0 7.1 3.4 6.8 7.4-.1 1.4-.7 2.8-1.6 3.8 2.3.7 3.6 2.3 3.6 4.7v4.2H20.8v-5.2c0-1.9.8-3.5 2.1-4.6-1.5-1.3-2.4-3.1-2.4-5.2 0-2.6 1.5-4.8 3.7-6 .3-1.8 1-3.1 2-3.6.7-.4 1.4.2 1.3 1l-.1 3.5Z"/>
+  <circle cx="27.5" cy="18.6" r="4.9" fill="#FFFFFF"/>
+  <ellipse cx="25.4" cy="18.1" rx=".9" ry="1.4" fill="#101725"/>
+  <ellipse cx="29.5" cy="18.1" rx=".9" ry="1.4" fill="#101725"/>
+  <path fill="none" stroke="#101725" stroke-width="1.2" stroke-linecap="round" d="M25.7 20.5c1 1.1 2.6 1.1 3.6 0"/>
+  <circle cx="30.8" cy="9.1" r="1.9" fill="#CFFB3B"/>
+</svg>

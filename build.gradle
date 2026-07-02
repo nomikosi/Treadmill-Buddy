@@ -1,10 +1,10 @@
 plugins {
     id 'java'
-    id 'org.jetbrains.intellij.platform' version '2.16.0'
+    id 'org.jetbrains.intellij.platform' version '2.17.0'
 }
 
 group = 'com.codex'
-version = '0.1.0'
+version = '1.0.0'
 
 repositories {
     mavenCentral()
@@ -15,14 +15,25 @@ repositories {
 
 dependencies {
     intellijPlatform {
-        intellijIdea('2024.3.6')
+        intellijIdeaCommunity('2024.3.6')
+        pluginVerifier()
     }
+    testImplementation platform('org.junit:junit-bom:5.10.3')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // The IntelliJ Platform test bootstrap references JUnit 4 classes even when
+    // the tests themselves are plain JUnit 5.
+    testRuntimeOnly 'junit:junit:4.13.2'
 }
 
 java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(17)
     }
+}
+
+test {
+    useJUnitPlatform()
 }
 
 intellijPlatform {
@@ -33,13 +44,13 @@ intellijPlatform {
         version = project.version
         description = '''
             <p><b>Treadmill Buddy</b> is a digital stopwatch for developers who walk while they code.</p>
-            <p>Track under-desk treadmill sessions from inside IntelliJ IDEA with a large digital clock, floating movable clock, saved sessions, distance, steps, calories, and goal countdowns.</p>
+            <p>Track under-desk treadmill sessions from inside any JetBrains IDE with a large digital clock, a status bar widget, a floating movable clock, saved sessions, distance, steps, calories, and goal countdowns.</p>
             <ul>
                 <li><b>Marathon:</b> open-ended count-up sessions.</li>
                 <li><b>Calorie burn:</b> count down from the time needed to burn a calorie target.</li>
                 <li><b>KG burn:</b> count down from the time needed to burn a target mass in kg.</li>
             </ul>
-            <p>The plugin includes selectable calorie algorithms, a Settings page for profile/defaults, live speed recalculation, live calorie-algorithm recalculation, saved session deletion, and configurable auto-pause after keyboard inactivity.</p>
+            <p>The plugin includes metric and imperial units, selectable calorie algorithms with incline support, an optional daily goal with progress tracking, a Settings page for profile/defaults, live speed and incline recalculation, session history with CSV export, daily/weekly/all-time totals with a 14-day chart and streaks, move reminders, and configurable auto-pause after inactivity.</p>
             <p>License: Apache License 2.0</p>
         '''.stripIndent().trim()
         ideaVersion {
@@ -51,5 +62,18 @@ intellijPlatform {
             email = 'hello@nomikosi.dev'
             url = 'https://github.com/nomikosi/Treadmill-Buddy'
         }
+    }
+    pluginVerification {
+        ides {
+            recommended()
+        }
+    }
+    signing {
+        certificateChain = providers.environmentVariable('CERTIFICATE_CHAIN')
+        privateKey = providers.environmentVariable('PRIVATE_KEY')
+        password = providers.environmentVariable('PRIVATE_KEY_PASSWORD')
+    }
+    publishing {
+        token = providers.environmentVariable('PUBLISH_TOKEN')
     }
 }

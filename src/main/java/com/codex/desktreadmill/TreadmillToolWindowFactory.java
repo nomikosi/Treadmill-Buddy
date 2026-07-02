@@ -10,10 +10,13 @@ import com.intellij.ui.content.ContentFactory;
 import org.jetbrains.annotations.NotNull;
 
 public final class TreadmillToolWindowFactory implements ToolWindowFactory, DumbAware {
+    public static final String TOOL_WINDOW_ID = "Treadmill Buddy";
+
     @Override
     public void createToolWindowContent(@NotNull Project project, @NotNull ToolWindow toolWindow) {
-        Content content = ContentFactory.getInstance()
-                .createContent(new TreadmillPanel(project), "", false);
+        TreadmillPanel panel = new TreadmillPanel(project);
+        Content content = ContentFactory.getInstance().createContent(panel, "", false);
+        content.setDisposer(panel);
         toolWindow.getContentManager().addContent(content);
     }
 }

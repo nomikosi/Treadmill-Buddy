@@ -19,7 +19,6 @@ limitations under the License.
     <id>com.codex.desktreadmill</id>
     <name>Treadmill Buddy</name>
     <vendor email="hello@nomikosi.dev" url="https://github.com/nomikosi/Treadmill-Buddy">Nomikosi Consulting</vendor>
-    <category>Code Tools</category>
 
     <description><![CDATA[
         <p><b>Treadmill Buddy</b> is a digital stopwatch for developers who walk while they code.</p>
@@ -35,11 +34,46 @@ limitations under the License.
 
     <change-notes><![CDATA[
         <ul>
-            <li>Initial Treadmill Buddy release with digital stopwatch, floating clock, saved sessions, calorie algorithms, countdown modes, and configurable profile settings.</li>
+            <li>1.0.0:
+                <ul>
+                    <li>Metric / imperial unit setting (km/h-kg-cm or mph-lb-in), switchable any time; stored data stays metric and converts in the UI.</li>
+                    <li>Optional daily goal (steps, distance, or calories) with a progress bar in the tool window and a once-per-day notification when reached.</li>
+                </ul>
+            </li>
+            <li>0.3.0:
+                <ul>
+                    <li>Incline support with the full ACSM grade equations.</li>
+                    <li>Optional "time to move" reminder after a configurable sitting time.</li>
+                    <li>14-day distance chart and walking-day streak in the tool window.</li>
+                    <li>Actions for start/pause, save, and new session in the Tools menu, tool window title bar, and status bar popup - bindable to shortcuts.</li>
+                    <li>Inline field validation instead of modal error dialogs.</li>
+                    <li>Session deletion is now undoable from a notification.</li>
+                    <li>Saved sessions sorted newest first; floating clock remembers position and pin state.</li>
+                    <li>Age removed from the profile - no algorithm used it.</li>
+                    <li>Dark plugin icon, message-bundle scaffolding, and Marketplace signing/publishing pipeline.</li>
+                </ul>
+            </li>
+            <li>0.2.0:
+                <ul>
+                    <li>Drift-proof session timing based on wall-clock deltas instead of raw timer ticks.</li>
+                    <li>One shared workout engine across all project windows; sessions keep running when the tool window is closed.</li>
+                    <li>Status bar widget with live time and calories; click to pause/resume.</li>
+                    <li>Dark-theme support for the seven-segment clock.</li>
+                    <li>Completion and save confirmations are now notifications instead of modal dialogs.</li>
+                    <li>Saved sessions list with toolbar, session details, keyboard support, and CSV export.</li>
+                    <li>Today / 7 days / all-time totals for distance and calories.</li>
+                    <li>Auto-pause now counts mouse activity too, and pauses after system sleep instead of crediting slept time.</li>
+                    <li>Floating clock gained a Pin (always on top) toggle.</li>
+                    <li>Proper resource cleanup on tool window close and plugin unload.</li>
+                </ul>
+            </li>
+            <li>0.1.0: Initial Treadmill Buddy release with digital stopwatch, floating clock, saved sessions, calorie algorithms, countdown modes, and configurable profile settings.</li>
         </ul>
     ]]></change-notes>
 
     <depends>com.intellij.modules.platform</depends>
+
+    <resource-bundle>messages.TreadmillBundle</resource-bundle>
 
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow
@@ -51,5 +85,26 @@ limitations under the License.
                 instance="com.codex.desktreadmill.settings.TreadmillConfigurable"
                 displayName="Treadmill Buddy"/>
         <postStartupActivity implementation="com.codex.desktreadmill.startup.TreadmillStartupActivity"/>
+        <statusBarWidgetFactory
+                id="TreadmillBuddyWidget"
+                implementation="com.codex.desktreadmill.ui.TreadmillStatusBarWidgetFactory"/>
+        <notificationGroup id="Treadmill Buddy" displayType="BALLOON"/>
     </extensions>
+
+    <actions>
+        <group id="TreadmillBuddy.Group" popup="true">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <action id="TreadmillBuddy.TogglePause"
+                    class="com.codex.desktreadmill.actions.TogglePauseAction"
+                    icon="AllIcons.Actions.Resume"/>
+            <action id="TreadmillBuddy.SaveSession"
+                    class="com.codex.desktreadmill.actions.SaveSessionAction"
+                    icon="AllIcons.Actions.MenuSaveall"/>
+            <action id="TreadmillBuddy.NewSession"
+                    class="com.codex.desktreadmill.actions.NewSessionAction"
+                    icon="AllIcons.General.Add"/>
+            <action id="TreadmillBuddy.OpenToolWindow"
+                    class="com.codex.desktreadmill.actions.OpenToolWindowAction"/>
+        </group>
+    </actions>
 </idea-plugin>

@@ -1,5 +1,6 @@
 package com.codex.desktreadmill.settings;
 
+import com.codex.desktreadmill.engine.WorkoutEngine;
 import com.intellij.openapi.options.Configurable;
 import com.intellij.openapi.options.ConfigurationException;
 import org.jetbrains.annotations.Nls;
@@ -27,12 +28,7 @@ public final class TreadmillConfigurable implements Configurable {
         if (profilePanel == null) {
             return false;
         }
-        TreadmillSettings settings = TreadmillSettings.getInstance();
-        return profilePanel.isModified(
-                settings.getProfile(),
-                settings.getSelectedAlgorithm(),
-                settings.getAutoPauseMinutes()
-        );
+        return profilePanel.isModified(TreadmillSettings.getInstance());
     }
 
     @Override
@@ -48,6 +44,11 @@ public final class TreadmillConfigurable implements Configurable {
         settings.setProfile(profilePanel.getProfile());
         settings.setSelectedAlgorithm(profilePanel.getAlgorithm());
         settings.setAutoPauseMinutes(profilePanel.getAutoPauseMinutes());
+        settings.setMoveReminderMinutes(profilePanel.getMoveReminderMinutes());
+        settings.setUnitSystem(profilePanel.getUnitSystem());
+        settings.setDailyGoalType(profilePanel.getDailyGoalType());
+        settings.setDailyGoalValue(profilePanel.getDailyGoalValueMetric());
+        WorkoutEngine.getInstance().refreshListeners();
     }
 
     @Override
