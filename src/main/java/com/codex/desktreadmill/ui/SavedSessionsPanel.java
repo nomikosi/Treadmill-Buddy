@@ -133,10 +133,13 @@ public final class SavedSessionsPanel {
         });
 
         return ToolbarDecorator.createDecorator(sessionsList)
-                .setRemoveAction(button -> deleteSelectedSession())
-                .setRemoveActionName(TreadmillBundle.message("sessions.delete"))
                 .disableAddAction()
                 .disableUpDownActions()
+                // The trash can deletes the highlighted session (undoable); the
+                // bulk older-than cleanup lives behind the history icon so the
+                // two aren't confused.
+                .addExtraAction(transferAction("sessions.delete", "sessions.delete.description",
+                        AllIcons.Actions.GC, this::deleteSelectedSession))
                 .addExtraAction(transferAction("sessions.export.csv.text", "sessions.export.csv.description",
                         AllIcons.ToolbarDecorator.Export, () -> SessionTransfer.exportCsv(project, settings)))
                 .addExtraAction(transferAction("sessions.export.json.text", "sessions.export.json.description",
@@ -156,7 +159,7 @@ public final class SavedSessionsPanel {
                             }
                         }))
                 .addExtraAction(transferAction("sessions.deleteOld.text", "sessions.deleteOld.description",
-                        AllIcons.Actions.GC, this::deleteOldSessions))
+                        AllIcons.Vcs.History, this::deleteOldSessions))
                 .addExtraAction(new ShowAllSessionsAction())
                 .createPanel();
     }
