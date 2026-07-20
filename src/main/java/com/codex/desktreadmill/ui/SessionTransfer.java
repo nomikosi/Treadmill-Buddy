@@ -3,6 +3,7 @@ package com.codex.desktreadmill.ui;
 import com.codex.desktreadmill.TreadmillBundle;
 import com.codex.desktreadmill.TreadmillNotifications;
 import com.codex.desktreadmill.calories.CalorieAlgorithm;
+import com.codex.desktreadmill.engine.WorkoutMath;
 import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.SessionMode;
 import com.codex.desktreadmill.model.SpeedSegment;
@@ -226,6 +227,12 @@ public final class SessionTransfer {
             SessionData session = parseCsvSession(header, parseCsvLine(lines.get(i)), i);
             if (session == null || existingKeys.contains(dedupeKey(session))) {
                 continue;
+            }
+            // CSV has no remaining_seconds column; a re-imported, still-open
+            // countdown session would otherwise load with a 00:00:00 clock.
+            // Rebuild the countdown from its target and burned calories.
+            if (!session.completed && SessionMode.fromId(session.modeId).isCountdown()) {
+                WorkoutMath.recalcRemaining(session, settings.getProfile());
             }
             existingKeys.add(dedupeKey(session));
             settings.saveSession(session);

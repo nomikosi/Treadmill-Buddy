@@ -76,6 +76,11 @@ public final class WorkoutEngine implements Disposable {
     private boolean autoPaused;
     private boolean keepRunningWhenIdle;
     private String statusNote = "";
+    /** Session ids already congratulated per record type, so a session that
+        pauses repeatedly doesn't re-fire the same "new record" balloon. */
+    private String sessionRecordCelebratedId = "";
+    private String dayDistanceRecordCelebratedId = "";
+    private String dayStepsRecordCelebratedId = "";
     private long lastTickMillis;
     private long carryMillis;
     private long lastActivityMillis;
@@ -582,10 +587,14 @@ public final class WorkoutEngine implements Disposable {
         long startOfToday = today.atStartOfDay(zone).toInstant().toEpochMilli();
         SessionStats.Totals todayTotals = SessionStats.totalsSince(settings.getSessions(), startOfToday);
 
+        // Each record notifies at most once per session id: the stored best is
+        // updated whenever this session grows past it, but the balloon fires
+        // only the first time - not on every subsequent pause of the same walk.
         long bestSession = settings.getBestSessionSeconds();
         if (session.elapsedSeconds > bestSession) {
             settings.setBestSessionSeconds(session.elapsedSeconds);
-            if (interactive && bestSession > 0) {
+            if (interactive && bestSession > 0 && !session.id.equals(sessionRecordCelebratedId)) {
+                sessionRecordCelebratedId = session.id;
                 TreadmillNotifications.info(
                         TreadmillBundle.message("notification.record.title"),
                         TreadmillBundle.message("notification.record.session",
@@ -595,7 +604,8 @@ public final class WorkoutEngine implements Disposable {
         double bestDayKm = settings.getBestDayDistanceKm();
         if (todayTotals.distanceKm > bestDayKm) {
             settings.setBestDayDistanceKm(todayTotals.distanceKm);
-            if (interactive && bestDayKm > 0) {
+            if (interactive && bestDayKm > 0 && !session.id.equals(dayDistanceRecordCelebratedId)) {
+                dayDistanceRecordCelebratedId = session.id;
                 TreadmillNotifications.info(
                         TreadmillBundle.message("notification.record.title"),
                         TreadmillBundle.message("notification.record.distance",
@@ -606,7 +616,8 @@ public final class WorkoutEngine implements Disposable {
         long bestDaySteps = settings.getBestDaySteps();
         if (todayTotals.steps > bestDaySteps) {
             settings.setBestDaySteps(todayTotals.steps);
-            if (interactive && bestDaySteps > 0) {
+            if (interactive && bestDaySteps > 0 && !session.id.equals(dayStepsRecordCelebratedId)) {
+                dayStepsRecordCelebratedId = session.id;
                 TreadmillNotifications.info(
                         TreadmillBundle.message("notification.record.title"),
                         TreadmillBundle.message("notification.record.steps",
