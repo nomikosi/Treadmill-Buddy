@@ -79,6 +79,17 @@ public final class SessionStore {
         write();
     }
 
+    /** Bulk delete with a single file write (used by "delete older than" cleanup). */
+    public synchronized void deleteSessions(java.util.Collection<String> ids) {
+        if (ids.isEmpty()) {
+            return;
+        }
+        ensureLoaded();
+        sessions.removeIf(session -> ids.contains(session.id));
+        deletedIds.addAll(ids);
+        write();
+    }
+
     /**
      * Merges sessions another IDE instance wrote since our last read. In-memory
      * sessions win on id conflicts (ours may include an in-flight workout);

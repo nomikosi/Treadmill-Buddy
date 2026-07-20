@@ -51,6 +51,7 @@ public final class TreadmillConfigurable implements Configurable {
         settings.setWeeklyGoalType(profilePanel.getWeeklyGoalType());
         settings.setWeeklyGoalValue(profilePanel.getWeeklyGoalValueMetric());
         settings.setStreakRestDaysPerWeek(profilePanel.getStreakRestDaysPerWeek());
+        settings.setStreakRiskHour(profilePanel.getStreakRiskHour());
         WorkoutEngine.getInstance().refreshListeners();
     }
 

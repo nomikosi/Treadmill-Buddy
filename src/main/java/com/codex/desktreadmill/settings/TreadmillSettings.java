@@ -121,6 +121,13 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
         }
     }
 
+    public void deleteSessions(List<String> ids) {
+        sessionStore.deleteSessions(ids);
+        if (ids.contains(state.lastSessionId)) {
+            state.lastSessionId = "";
+        }
+    }
+
     public @Nullable SessionData findSession(String id) {
         if (id == null || id.isBlank()) {
             return null;
@@ -234,6 +241,15 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
         state.streakRestDaysPerWeek = Math.max(0, Math.min(2, restDays));
     }
 
+    /** Hour of day (1-23) from which a walk-free day shows "streak at risk"; 0 disables the hint. */
+    public int getStreakRiskHour() {
+        return state.streakRiskHour;
+    }
+
+    public void setStreakRiskHour(int hour) {
+        state.streakRiskHour = Math.max(0, Math.min(23, hour));
+    }
+
     public long getBestSessionSeconds() {
         return state.bestSessionSeconds;
     }
@@ -317,6 +333,7 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
         public double weeklyGoalValue = 0.0;
         public long lastWeeklyGoalAchievedWeek = 0L;
         public int streakRestDaysPerWeek = 0;
+        public int streakRiskHour = 17;
         public long bestSessionSeconds = 0L;
         public double bestDayDistanceKm = 0.0;
         public long bestDaySteps = 0L;

@@ -54,6 +54,11 @@ public final class SessionTransfer {
         if (wrapper == null) {
             return;
         }
+        writeFile(project, wrapper, buildCsv(sessions), sessions.size());
+    }
+
+    /** Package-visible for round-trip tests. Always metric columns, locale-independent. */
+    static String buildCsv(List<SessionData> sessions) {
         StringBuilder csv = new StringBuilder(
                 "name,mode,algorithm,created,speed_kmh,incline_percent,elapsed_seconds,distance_km,steps,calories,target_calories,target_fat_kg,completed\n");
         for (SessionData session : sessions) {
@@ -75,7 +80,7 @@ public final class SessionTransfer {
                     .append(session.completed)
                     .append('\n');
         }
-        writeFile(project, wrapper, csv.toString(), sessions.size());
+        return csv.toString();
     }
 
     public static void exportJson(@Nullable Project project, TreadmillSettings settings) {
@@ -140,7 +145,7 @@ public final class SessionTransfer {
      * speed segments when present, scaled so the last point lands exactly on
      * the session total; sessions without segments interpolate linearly.
      */
-    private static String buildTrackpoints(SessionData session, Instant start) {
+    static String buildTrackpoints(SessionData session, Instant start) {
         StringBuilder track = new StringBuilder();
         long elapsed = session.elapsedSeconds;
         double totalMeters = session.distanceKm * 1000.0;
@@ -286,7 +291,7 @@ public final class SessionTransfer {
         return session.createdMillis + "|" + session.name;
     }
 
-    private static @Nullable SessionData parseCsvSession(List<String> header, List<String> fields, int rowIndex) {
+    static @Nullable SessionData parseCsvSession(List<String> header, List<String> fields, int rowIndex) {
         SessionData session = new SessionData();
         session.id = System.currentTimeMillis() + "-import-" + rowIndex;
         try {

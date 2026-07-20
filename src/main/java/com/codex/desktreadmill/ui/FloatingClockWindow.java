@@ -1,5 +1,6 @@
 package com.codex.desktreadmill.ui;
 
+import com.codex.desktreadmill.TreadmillBundle;
 import com.codex.desktreadmill.settings.TreadmillSettings;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.wm.WindowManager;
@@ -30,13 +31,13 @@ public final class FloatingClockWindow {
     private final TreadmillSettings settings = TreadmillSettings.getInstance();
     private final JDialog dialog;
     private final DigitalClockDisplay display = new DigitalClockDisplay();
-    private final JButton pauseResumeButton = new JButton("Start");
-    private final JButton saveButton = new JButton("Save");
+    private final JButton pauseResumeButton = new JButton(TreadmillBundle.message("button.start"));
+    private final JButton saveButton = new JButton(TreadmillBundle.message("button.saveSession"));
     private Point dragStart;
 
     public FloatingClockWindow(Project project, Runnable pauseResumeAction, Runnable saveAction) {
         Frame owner = WindowManager.getInstance().getFrame(project);
-        dialog = new JDialog(owner, "Treadmill Buddy Clock", false);
+        dialog = new JDialog(owner, TreadmillBundle.message("floating.title"), false);
         dialog.setUndecorated(true);
         dialog.setDefaultCloseOperation(JDialog.HIDE_ON_CLOSE);
         dialog.getRootPane().setBorder(JBUI.Borders.customLine(JBColor.border()));
@@ -89,7 +90,7 @@ public final class FloatingClockWindow {
         JPanel titleBar = new JPanel(new BorderLayout());
         titleBar.setBorder(JBUI.Borders.empty(4, 8));
 
-        JBLabel title = new JBLabel("Treadmill Buddy Clock");
+        JBLabel title = new JBLabel(TreadmillBundle.message("floating.title"));
         title.setHorizontalAlignment(SwingConstants.LEFT);
         JButton close = new JButton("x");
         close.setFocusable(false);
@@ -101,7 +102,7 @@ public final class FloatingClockWindow {
 
         JToggleButton pinButton = new JToggleButton();
         pinButton.setFocusable(false);
-        pinButton.setToolTipText("Keep the clock on top of all windows");
+        pinButton.setToolTipText(TreadmillBundle.message("floating.pin.tooltip"));
         pinButton.setSelected(settings.isFloatingClockPinned());
         if (pinButton.isSelected() && dialog.isAlwaysOnTopSupported()) {
             dialog.setAlwaysOnTop(true);
@@ -133,10 +134,10 @@ public final class FloatingClockWindow {
 
     private static void updatePinButton(JToggleButton pinButton) {
         if (pinButton.isSelected()) {
-            pinButton.setText("Pinned");
+            pinButton.setText(TreadmillBundle.message("floating.pinned"));
             pinButton.setForeground(PIN_ENABLED);
         } else {
-            pinButton.setText("Unpinned");
+            pinButton.setText(TreadmillBundle.message("floating.unpinned"));
             pinButton.setForeground(PIN_DISABLED);
         }
     }

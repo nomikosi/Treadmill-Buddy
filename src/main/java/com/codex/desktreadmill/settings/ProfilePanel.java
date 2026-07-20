@@ -1,5 +1,6 @@
 package com.codex.desktreadmill.settings;
 
+import com.codex.desktreadmill.TreadmillBundle;
 import com.codex.desktreadmill.calories.CalorieAlgorithm;
 import com.codex.desktreadmill.model.GoalType;
 import com.codex.desktreadmill.model.UnitSystem;
@@ -26,10 +27,11 @@ public final class ProfilePanel {
     private final ComboBox<GoalType> weeklyGoalTypeCombo = new ComboBox<>(GoalType.values());
     private final JBTextField weeklyGoalValueField = new JBTextField();
     private final JBTextField streakRestDaysField = new JBTextField();
+    private final JBTextField streakRiskHourField = new JBTextField();
     private final JBLabel weightLabel = new JBLabel();
     private final JBLabel heightLabel = new JBLabel();
-    private final JBLabel goalValueLabel = new JBLabel("Goal value");
-    private final JBLabel weeklyGoalValueLabel = new JBLabel("Weekly goal value");
+    private final JBLabel goalValueLabel = new JBLabel();
+    private final JBLabel weeklyGoalValueLabel = new JBLabel();
     private final JPanel panel;
 
     /** Units currently reflected by the field texts, so a combo switch can convert them. */
@@ -41,17 +43,18 @@ public final class ProfilePanel {
         goalTypeCombo.addActionListener(event -> goalTypeChanged());
         weeklyGoalTypeCombo.addActionListener(event -> goalTypeChanged());
         panel = FormBuilder.createFormBuilder()
-                .addLabeledComponent(new JBLabel("Units"), unitsCombo, 1, false)
+                .addLabeledComponent(new JBLabel(TreadmillBundle.message("settings.units")), unitsCombo, 1, false)
                 .addLabeledComponent(weightLabel, weightField, 1, false)
                 .addLabeledComponent(heightLabel, heightField, 1, false)
-                .addLabeledComponent(new JBLabel("Default calorie algorithm"), algorithmCombo, 1, false)
-                .addLabeledComponent(new JBLabel("Auto-pause idle sessions (minutes, 0 = off)"), autoPauseField, 1, false)
-                .addLabeledComponent(new JBLabel("Remind me to move (minutes, 0 = off)"), moveReminderField, 1, false)
-                .addLabeledComponent(new JBLabel("Daily goal"), goalTypeCombo, 1, false)
+                .addLabeledComponent(new JBLabel(TreadmillBundle.message("settings.algorithm")), algorithmCombo, 1, false)
+                .addLabeledComponent(new JBLabel(TreadmillBundle.message("settings.autoPause")), autoPauseField, 1, false)
+                .addLabeledComponent(new JBLabel(TreadmillBundle.message("settings.moveReminder")), moveReminderField, 1, false)
+                .addLabeledComponent(new JBLabel(TreadmillBundle.message("settings.dailyGoal")), goalTypeCombo, 1, false)
                 .addLabeledComponent(goalValueLabel, goalValueField, 1, false)
-                .addLabeledComponent(new JBLabel("Weekly goal"), weeklyGoalTypeCombo, 1, false)
+                .addLabeledComponent(new JBLabel(TreadmillBundle.message("settings.weeklyGoal")), weeklyGoalTypeCombo, 1, false)
                 .addLabeledComponent(weeklyGoalValueLabel, weeklyGoalValueField, 1, false)
-                .addLabeledComponent(new JBLabel("Streak rest days per week (0-2)"), streakRestDaysField, 1, false)
+                .addLabeledComponent(new JBLabel(TreadmillBundle.message("settings.restDays")), streakRestDaysField, 1, false)
+                .addLabeledComponent(new JBLabel(TreadmillBundle.message("settings.streakRiskHour")), streakRiskHourField, 1, false)
                 .addComponentFillVertically(new JPanel(new BorderLayout()), 0)
                 .getPanel();
         updateUnitLabels();
@@ -84,6 +87,7 @@ public final class ProfilePanel {
                 ? format(weeklyType == GoalType.DISTANCE ? fieldUnits.distanceFromKm(weeklyValue) : weeklyValue)
                 : "");
         streakRestDaysField.setText(String.valueOf(settings.getStreakRestDaysPerWeek()));
+        streakRiskHourField.setText(String.valueOf(settings.getStreakRiskHour()));
         updateUnitLabels();
         goalTypeChanged();
     }
@@ -147,6 +151,10 @@ public final class ProfilePanel {
         return parseInt(streakRestDaysField.getText());
     }
 
+    public int getStreakRiskHour() {
+        return parseInt(streakRiskHourField.getText());
+    }
+
     public int getAutoPauseMinutes() {
         return parseInt(autoPauseField.getText());
     }
@@ -160,30 +168,36 @@ public final class ProfilePanel {
         double weightKg = units.weightToKg(parseDouble(weightField.getText()));
         double heightCm = units.heightToCm(parseDouble(heightField.getText()));
         if (weightKg < 20 || weightKg > 300) {
-            return String.format("Enter a weight between %.0f and %.0f %s.",
-                    units.weightFromKg(20), units.weightFromKg(300), units.weightUnit());
+            return TreadmillBundle.message("settings.validation.weight",
+                    String.format("%.0f", units.weightFromKg(20)),
+                    String.format("%.0f", units.weightFromKg(300)), units.weightUnit());
         }
         if (heightCm < 90 || heightCm > 250) {
-            return String.format("Enter a height between %.0f and %.0f %s.",
-                    units.heightFromCm(90), units.heightFromCm(250), units.heightUnit());
+            return TreadmillBundle.message("settings.validation.height",
+                    String.format("%.0f", units.heightFromCm(90)),
+                    String.format("%.0f", units.heightFromCm(250)), units.heightUnit());
         }
         int autoPauseMinutes = parseInt(autoPauseField.getText());
         if (autoPauseMinutes < 0 || autoPauseMinutes > 240) {
-            return "Enter auto-pause minutes between 0 and 240. Use 0 to disable it.";
+            return TreadmillBundle.message("settings.validation.autoPause");
         }
         int moveReminderMinutes = parseInt(moveReminderField.getText());
         if (moveReminderMinutes < 0 || moveReminderMinutes > 480) {
-            return "Enter move-reminder minutes between 0 and 480. Use 0 to disable it.";
+            return TreadmillBundle.message("settings.validation.moveReminder");
         }
         if (getDailyGoalType() != GoalType.NONE && parseDouble(goalValueField.getText()) <= 0) {
-            return "Enter a daily goal value greater than zero, or set the goal to None.";
+            return TreadmillBundle.message("settings.validation.dailyGoal");
         }
         if (getWeeklyGoalType() != GoalType.NONE && parseDouble(weeklyGoalValueField.getText()) <= 0) {
-            return "Enter a weekly goal value greater than zero, or set the goal to None.";
+            return TreadmillBundle.message("settings.validation.weeklyGoal");
         }
         int restDays = getStreakRestDaysPerWeek();
         if (restDays < 0 || restDays > 2) {
-            return "Enter streak rest days between 0 and 2.";
+            return TreadmillBundle.message("settings.validation.restDays");
+        }
+        int riskHour = getStreakRiskHour();
+        if (riskHour < 0 || riskHour > 23) {
+            return TreadmillBundle.message("settings.validation.streakRiskHour");
         }
         return null;
     }
@@ -201,7 +215,8 @@ public final class ProfilePanel {
                 || Math.abs(getDailyGoalValueMetric() - settings.getDailyGoalValue()) > 0.001
                 || getWeeklyGoalType() != settings.getWeeklyGoalType()
                 || Math.abs(getWeeklyGoalValueMetric() - settings.getWeeklyGoalValue()) > 0.001
-                || getStreakRestDaysPerWeek() != settings.getStreakRestDaysPerWeek();
+                || getStreakRestDaysPerWeek() != settings.getStreakRestDaysPerWeek()
+                || getStreakRiskHour() != settings.getStreakRiskHour();
     }
 
     private void unitsSelectionChanged() {
@@ -234,8 +249,8 @@ public final class ProfilePanel {
 
     private void updateUnitLabels() {
         UnitSystem units = getUnitSystem();
-        weightLabel.setText("Weight (" + units.weightUnit() + ")");
-        heightLabel.setText("Height (" + units.heightUnit() + ")");
+        weightLabel.setText(TreadmillBundle.message("settings.weight", units.weightUnit()));
+        heightLabel.setText(TreadmillBundle.message("settings.height", units.heightUnit()));
         updateGoalValueLabel();
     }
 
@@ -246,8 +261,8 @@ public final class ProfilePanel {
     }
 
     private void updateGoalValueLabel() {
-        goalValueLabel.setText("Goal value" + goalUnitSuffix(getDailyGoalType()));
-        weeklyGoalValueLabel.setText("Weekly goal value" + goalUnitSuffix(getWeeklyGoalType()));
+        goalValueLabel.setText(TreadmillBundle.message("settings.goalValue", goalUnitSuffix(getDailyGoalType())));
+        weeklyGoalValueLabel.setText(TreadmillBundle.message("settings.weeklyGoalValue", goalUnitSuffix(getWeeklyGoalType())));
     }
 
     private String goalUnitSuffix(GoalType type) {
