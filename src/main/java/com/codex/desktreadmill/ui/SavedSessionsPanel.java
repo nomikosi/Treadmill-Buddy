@@ -135,6 +135,9 @@ public final class SavedSessionsPanel {
         return ToolbarDecorator.createDecorator(sessionsList)
                 .disableAddAction()
                 .disableUpDownActions()
+                // Drop the default minus button; the trash-can extra action is
+                // the single delete control.
+                .disableRemoveAction()
                 // The trash can deletes the highlighted session (undoable); the
                 // bulk older-than cleanup lives behind the history icon so the
                 // two aren't confused.
