@@ -8,7 +8,9 @@ import com.codex.desktreadmill.settings.TreadmillSettings;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -17,13 +19,16 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WorkoutEngineTest {
+    @TempDir
+    Path tempDir;
+
     private TreadmillSettings settings;
     private WorkoutEngine engine;
     private long nowMillis;
 
     @BeforeEach
     void setUp() {
-        settings = new TreadmillSettings();
+        settings = new TreadmillSettings(tempDir.resolve("sessions.json"));
         UserProfile profile = new UserProfile();
         profile.weightKg = 70.0;
         profile.heightCm = 170.0;
@@ -133,6 +138,44 @@ class WorkoutEngineTest {
         nowMillis += 60_000;
         engine.tick();
         assertEquals(10L, engine.getSession().elapsedSeconds);
+    }
+
+    @Test
+    void intervalModeAlternatesWalkAndBreakBlocks() {
+        SessionData session = marathonSession();
+        session.modeId = SessionMode.INTERVAL.name();
+        session.intervalWalkSeconds = 60L;
+        session.intervalBreakSeconds = 30L;
+        engine.startSession(session);
+
+        // Full walk block (ticked in two halves to stay under the suspend-gap
+        // threshold): metrics accumulate, then the phase flips to break.
+        nowMillis += 30_000;
+        engine.tick();
+        nowMillis += 30_000;
+        engine.tick();
+        assertEquals(60L, engine.getSession().elapsedSeconds);
+        assertFalse(engine.getSession().intervalWalking);
+
+        // Break block: time passes but no walking is credited.
+        nowMillis += 30_000;
+        engine.tick();
+        assertEquals(60L, engine.getSession().elapsedSeconds);
+        assertTrue(engine.getSession().intervalWalking);
+        assertTrue(engine.isRunning());
+    }
+
+    @Test
+    void keepRunningWhenIdleSuppressesIdlePause() {
+        settings.setAutoPauseMinutes(1);
+        engine.setKeepRunningWhenIdle(true);
+        engine.startSession(marathonSession());
+        nowMillis += 55_000;
+        engine.tick();
+        nowMillis += 20_000;
+        engine.tick();
+        assertTrue(engine.isRunning());
+        assertEquals(75L, engine.getSession().elapsedSeconds);
     }
 
     @Test

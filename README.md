@@ -13,10 +13,14 @@ Treadmill Buddy is a JetBrains IDE plugin for developers who use an under-desk t
 - Offers a movable floating clock with `Pause` / `Resume`, `Save`, and `Pinned` / `Unpinned` (always on top) controls; position and pin state are remembered.
 - Saves sessions so you can pause, resume, load, or delete them later (deletion is undoable from the notification).
 - Tracks elapsed time, countdown time, distance, steps, calories, incline, and targets.
-- Shows today / last-7-days / all-time totals, a 14-day distance chart, and your walking-day streak, and exports session history to CSV.
-- Supports an optional daily goal (steps, distance, or calories) with a progress bar and a congratulation notification when you hit it.
+- Shows today / last-7-days / all-time totals, a 14-day distance chart, a six-month activity heatmap, and your walking-day streak (with 0-2 configurable rest days per week and an evening "streak at risk" hint).
+- Stores session history in `~/.treadmill-buddy/sessions.json`, shared across all JetBrains IDEs and safe across IDE reinstalls.
+- Exports session history to CSV or JSON, imports CSV back, and exports single sessions as TCX workouts for Garmin Connect, Strava, and similar services.
+- Supports optional daily and weekly goals (steps, distance, or calories) with progress bars, a status bar progress glyph, and a congratulation notification when you hit them.
+- Lets you save named speed presets and switch between them with one click; multi-speed sessions get a per-speed breakdown tooltip.
+- Tracks personal records (longest session, best day distance and steps) and notifies you when you break one.
 - Updates countdown estimates live when speed, incline, or calorie algorithm changes.
-- Auto-pauses after keyboard and mouse inactivity, then resumes when typing starts again.
+- Auto-pauses after keyboard and mouse inactivity, then resumes when typing starts again; a `Keep Running While Idle` toggle suspends this for reading-heavy walking or meetings.
 - Optionally reminds you to move after a configurable sitting time.
 - Provides IDE actions (`Start/Pause Treadmill Session`, `New Treadmill Session`, ...) in the Tools menu, the tool window title bar, and Find Action, so you can bind keyboard shortcuts.
 - Keeps one shared workout running across all open project windows — timing is wall-clock based, so a busy IDE never shortens your session.
@@ -35,6 +39,10 @@ Counts down from the estimated time needed to burn a calorie target. Enter calor
 `KG burn`
 
 Counts down from the estimated time needed to burn a target body mass (kg, or lb in imperial mode). If the goal would require more than 99 days, the plugin nudges you toward a smaller goal first.
+
+`Interval walk`
+
+Alternates walking and break blocks (for example 25 minutes walking, 5 minutes standing) with a chime and notification at each switch. The clock counts down the current block; distance, steps, and calories accumulate only while walking.
 
 ## Calorie Algorithms
 
@@ -57,7 +65,8 @@ On first IDE startup, Treadmill Buddy shows a notification inviting you to set u
 - Default calorie algorithm
 - Auto-pause timeout
 - Move-reminder interval
-- Optional daily goal (steps, distance, or calories)
+- Optional daily and weekly goals (steps, distance, or calories)
+- Streak rest days per week (0-2)
 
 You can edit everything later from `Settings | Tools | Treadmill Buddy`; switching units converts the displayed values on the spot, and all stored data stays metric internally, so nothing is lost by switching back and forth.
 
@@ -75,8 +84,8 @@ You can edit everything later from `Settings | Tools | Treadmill Buddy`; switchi
 - Keyboard and mouse activity keep the session alive; after the idle timeout it auto-pauses, and typing resumes it.
 - If the machine goes to sleep, the session auto-pauses instead of crediting the slept time.
 - Session completion shows a notification (no modal dialog interrupting your typing).
-- Saved sessions appear in a list with duration, distance, calories, and date; double-click or press Enter to load one, use the toolbar to delete or export all sessions to CSV.
-- The CSV export always uses metric columns (`speed_kmh`, `distance_km`), regardless of the display units, so exported data stays comparable.
+- Saved sessions appear in a list with duration, distance, calories, and date; double-click or press Enter to load one, use the toolbar to delete, import CSV, or export sessions as CSV, JSON, or TCX.
+- The CSV export always uses metric columns (`speed_kmh`, `distance_km`), regardless of the display units, so exported data stays comparable, and re-importing skips sessions you already have.
 
 ## Build and Development
 

@@ -27,6 +27,7 @@ limitations under the License.
             <li><b>Marathon:</b> open-ended count-up sessions.</li>
             <li><b>Calorie burn:</b> count down from the time needed to burn a calorie target.</li>
             <li><b>KG burn:</b> count down from the time needed to burn a target mass in kg.</li>
+            <li><b>Interval walk:</b> alternating walk/break blocks with a chime at each switch.</li>
         </ul>
         <p>The plugin includes selectable calorie algorithms, a Settings page for profile/defaults, live speed recalculation, live calorie-algorithm recalculation, saved session deletion, and configurable auto-pause after keyboard inactivity.</p>
         <p>License: Apache License 2.0</p>
@@ -34,6 +35,21 @@ limitations under the License.
 
     <change-notes><![CDATA[
         <ul>
+            <li>1.1.0:
+                <ul>
+                    <li>New <b>Interval walk</b> mode: alternating walk/break blocks (e.g. 25/5 minutes) with a chime and notification at each switch.</li>
+                    <li>Speed presets: save named treadmill speeds and switch with one click from the new Presets button.</li>
+                    <li>Per-speed session breakdown: hover the Distance tile to see how long you walked at each speed.</li>
+                    <li>Optional weekly goal (steps, distance, or calories) with its own progress bar, next to the daily goal.</li>
+                    <li>Walking streak is now computed over the full history and supports 0-2 configurable rest days per week; a "streak at risk" hint appears in the evening.</li>
+                    <li>Six-month activity heatmap (GitHub-style) in the tool window.</li>
+                    <li>Personal records (longest session, best day distance/steps) with a notification when you break one.</li>
+                    <li>CSV import, JSON export, and per-session TCX export for Garmin Connect / Strava.</li>
+                    <li>Daily-goal progress glyph in the status bar widget.</li>
+                    <li>New "Keep Running While Idle" toggle (status bar popup / Tools menu) for reading-heavy walking.</li>
+                    <li>Session history now lives in <code>~/.treadmill-buddy/sessions.json</code>, shared across all JetBrains IDEs and safe across IDE reinstalls; existing history migrates automatically.</li>
+                </ul>
+            </li>
             <li>1.0.2:
                 <ul>
                     <li>Fully remove the deprecated file-chooser constructor reference flagged by the Marketplace verifier (resolved at runtime for 2024.3 and 2025.1+ compatibility).</li>
@@ -113,6 +129,8 @@ limitations under the License.
             <action id="TreadmillBuddy.NewSession"
                     class="com.codex.desktreadmill.actions.NewSessionAction"
                     icon="AllIcons.General.Add"/>
+            <action id="TreadmillBuddy.KeepRunningWhenIdle"
+                    class="com.codex.desktreadmill.actions.ToggleIdlePauseAction"/>
             <action id="TreadmillBuddy.OpenToolWindow"
                     class="com.codex.desktreadmill.actions.OpenToolWindowAction"/>
         </group>

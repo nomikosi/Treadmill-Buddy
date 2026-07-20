@@ -4,7 +4,7 @@ plugins {
 }
 
 group = 'com.codex'
-version = '1.0.2'
+version = '1.1.0'
 
 repositories {
     mavenCentral()
@@ -49,8 +49,9 @@ intellijPlatform {
                 <li><b>Marathon:</b> open-ended count-up sessions.</li>
                 <li><b>Calorie burn:</b> count down from the time needed to burn a calorie target.</li>
                 <li><b>KG burn:</b> count down from the time needed to burn a target mass in kg.</li>
+                <li><b>Interval walk:</b> alternating walk/break blocks with a chime at each switch.</li>
             </ul>
-            <p>The plugin includes metric and imperial units, selectable calorie algorithms with incline support, an optional daily goal with progress tracking, a Settings page for profile/defaults, live speed and incline recalculation, session history with CSV export, daily/weekly/all-time totals with a 14-day chart and streaks, move reminders, and configurable auto-pause after inactivity.</p>
+            <p>The plugin includes metric and imperial units, selectable calorie algorithms with incline support, optional daily and weekly goals with progress tracking, speed presets, per-speed session breakdowns, personal records, a Settings page for profile/defaults, live speed and incline recalculation, cross-IDE session history with CSV/JSON/TCX export and CSV import, daily/weekly/all-time totals with a 14-day chart, a six-month activity heatmap, streaks with configurable rest days, move reminders, and configurable auto-pause after inactivity.</p>
             <p>License: Apache License 2.0</p>
         '''.stripIndent().trim()
         ideaVersion {

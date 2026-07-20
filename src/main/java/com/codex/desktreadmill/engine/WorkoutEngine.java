@@ -74,6 +74,7 @@ public final class WorkoutEngine implements Disposable {
     private SessionData session;
     private boolean running;
     private boolean autoPaused;
+    private boolean keepRunningWhenIdle;
     private String statusNote = "";
     private long lastTickMillis;
     private long carryMillis;
@@ -141,6 +142,22 @@ public final class WorkoutEngine implements Disposable {
 
     public boolean isAutoPaused() {
         return autoPaused;
+    }
+
+    /** When set, keyboard inactivity never pauses the session (system sleep still does). */
+    public boolean isKeepRunningWhenIdle() {
+        return keepRunningWhenIdle;
+    }
+
+    public void setKeepRunningWhenIdle(boolean keepRunning) {
+        if (keepRunningWhenIdle == keepRunning) {
+            return;
+        }
+        keepRunningWhenIdle = keepRunning;
+        // Fold the idle window that already accrued, so enabling the toggle
+        // right before the threshold doesn't pause on the next tick anyway.
+        lastActivityMillis = clock.getAsLong();
+        notifyStateChanged();
     }
 
     public String getStatusNote() {
@@ -295,6 +312,7 @@ public final class WorkoutEngine implements Disposable {
         carryMillis = 0L;
         lastWalkMillis = clock.getAsLong();
         persist();
+        maybeCelebrateRecords();
         notifyStateChanged();
     }
 
@@ -325,17 +343,39 @@ public final class WorkoutEngine implements Disposable {
         }
         lastWalkMillis = now;
         SessionMode mode = SessionMode.fromId(session.modeId);
+        boolean phaseSwitched = false;
         for (long i = 0; i < secondsToAdvance && running; i++) {
-            WorkoutMath.advanceOneSecond(session, settings.getProfile());
-            if (mode != SessionMode.MARATHON && session.remainingSeconds == 0L) {
-                completeSession();
-                return;
+            if (mode == SessionMode.INTERVAL) {
+                phaseSwitched |= WorkoutMath.advanceIntervalSecond(session, settings.getProfile());
+            } else {
+                WorkoutMath.advanceOneSecond(session, settings.getProfile());
+                if (mode.isCountdown() && session.remainingSeconds == 0L) {
+                    completeSession();
+                    return;
+                }
             }
+        }
+        if (phaseSwitched) {
+            announceIntervalPhase();
         }
         if (now - lastPersistMillis >= PERSIST_INTERVAL_MILLIS) {
             persist();
         }
         notifyStateChanged();
+    }
+
+    private void announceIntervalPhase() {
+        persist();
+        if (!interactive) {
+            return;
+        }
+        Toolkit.getDefaultToolkit().beep();
+        boolean walking = session.intervalWalking;
+        long minutes = (walking ? session.intervalWalkSeconds : session.intervalBreakSeconds) / 60L;
+        TreadmillNotifications.info(
+                TreadmillBundle.message(walking ? "notification.interval.walk.title" : "notification.interval.break.title"),
+                TreadmillBundle.message(walking ? "notification.interval.walk.content" : "notification.interval.break.content", minutes)
+        );
     }
 
     private void completeSession() {
@@ -346,6 +386,7 @@ public final class WorkoutEngine implements Disposable {
         session.completed = true;
         lastWalkMillis = clock.getAsLong();
         persist();
+        maybeCelebrateRecords();
         if (interactive) {
             Toolkit.getDefaultToolkit().beep();
             TreadmillNotifications.info(
@@ -401,6 +442,9 @@ public final class WorkoutEngine implements Disposable {
     }
 
     private boolean shouldAutoPauseForIdle(long now) {
+        if (keepRunningWhenIdle) {
+            return false;
+        }
         int idleMinutes = settings.getAutoPauseMinutes();
         if (idleMinutes == 0) {
             return false;
@@ -437,6 +481,7 @@ public final class WorkoutEngine implements Disposable {
             listener.sessionsPersisted();
         }
         maybeCelebrateDailyGoal();
+        maybeCelebrateWeeklyGoal();
     }
 
     private void maybeCelebrateDailyGoal() {
@@ -469,6 +514,91 @@ public final class WorkoutEngine implements Disposable {
                             goalType.formatValue(target, settings.getUnitSystem()))
             );
         }
+    }
+
+    private void maybeCelebrateWeeklyGoal() {
+        if (!interactive) {
+            return;
+        }
+        GoalType goalType = settings.getWeeklyGoalType();
+        double target = settings.getWeeklyGoalValue();
+        if (goalType == GoalType.NONE || target <= 0) {
+            return;
+        }
+        ZoneId zone = ZoneId.systemDefault();
+        LocalDate today = Instant.ofEpochMilli(clock.getAsLong()).atZone(zone).toLocalDate();
+        LocalDate weekStart = today.with(java.time.DayOfWeek.MONDAY);
+        if (settings.getLastWeeklyGoalAchievedWeek() == weekStart.toEpochDay()) {
+            return;
+        }
+        long startOfWeek = weekStart.atStartOfDay(zone).toInstant().toEpochMilli();
+        SessionStats.Totals totals = SessionStats.totalsSince(settings.getSessions(), startOfWeek);
+        double progress = switch (goalType) {
+            case STEPS -> totals.steps;
+            case DISTANCE -> totals.distanceKm;
+            case CALORIES -> totals.calories;
+            case NONE -> 0.0;
+        };
+        if (progress >= target) {
+            settings.setLastWeeklyGoalAchievedWeek(weekStart.toEpochDay());
+            TreadmillNotifications.info(
+                    TreadmillBundle.message("notification.goal.weekly.title"),
+                    TreadmillBundle.message("notification.goal.weekly.content",
+                            goalType.formatValue(target, settings.getUnitSystem()))
+            );
+        }
+    }
+
+    /**
+     * Called when a session pauses or completes: checks whether the finished
+     * stretch set a new personal record and celebrates at most once per record
+     * type. Bests are stored even before any notification is possible, so the
+     * very first session quietly seeds the baseline instead of "breaking" it.
+     */
+    private void maybeCelebrateRecords() {
+        if (session == null || session.elapsedSeconds == 0) {
+            return;
+        }
+        ZoneId zone = ZoneId.systemDefault();
+        LocalDate today = Instant.ofEpochMilli(clock.getAsLong()).atZone(zone).toLocalDate();
+        long startOfToday = today.atStartOfDay(zone).toInstant().toEpochMilli();
+        SessionStats.Totals todayTotals = SessionStats.totalsSince(settings.getSessions(), startOfToday);
+
+        long bestSession = settings.getBestSessionSeconds();
+        if (session.elapsedSeconds > bestSession) {
+            settings.setBestSessionSeconds(session.elapsedSeconds);
+            if (interactive && bestSession > 0) {
+                TreadmillNotifications.info(
+                        TreadmillBundle.message("notification.record.title"),
+                        TreadmillBundle.message("notification.record.session",
+                                formatMinutes(session.elapsedSeconds), formatMinutes(bestSession)));
+            }
+        }
+        double bestDayKm = settings.getBestDayDistanceKm();
+        if (todayTotals.distanceKm > bestDayKm) {
+            settings.setBestDayDistanceKm(todayTotals.distanceKm);
+            if (interactive && bestDayKm > 0) {
+                TreadmillNotifications.info(
+                        TreadmillBundle.message("notification.record.title"),
+                        TreadmillBundle.message("notification.record.distance",
+                                String.format("%.2f", settings.getUnitSystem().distanceFromKm(todayTotals.distanceKm)),
+                                settings.getUnitSystem().distanceUnit()));
+            }
+        }
+        long bestDaySteps = settings.getBestDaySteps();
+        if (todayTotals.steps > bestDaySteps) {
+            settings.setBestDaySteps(todayTotals.steps);
+            if (interactive && bestDaySteps > 0) {
+                TreadmillNotifications.info(
+                        TreadmillBundle.message("notification.record.title"),
+                        TreadmillBundle.message("notification.record.steps",
+                                String.format("%,d", todayTotals.steps)));
+            }
+        }
+    }
+
+    private static String formatMinutes(long seconds) {
+        return String.format("%d:%02d", seconds / 3600, seconds % 3600 / 60);
     }
 
     private void notifyStateChanged() {

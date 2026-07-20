@@ -1,5 +1,8 @@
 package com.codex.desktreadmill.model;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class SessionData {
     public String id = "";
     public String name = "";
@@ -17,6 +20,16 @@ public class SessionData {
     public double calories = 0.0;
     public boolean completed = false;
     public long createdMillis = 0L;
+    /** Interval mode: length of one walking block in seconds. */
+    public long intervalWalkSeconds = 0L;
+    /** Interval mode: length of one break block in seconds. */
+    public long intervalBreakSeconds = 0L;
+    /** Interval mode: true while in a walking block. */
+    public boolean intervalWalking = true;
+    /** Interval mode: seconds spent in the current block. */
+    public long intervalPhaseSeconds = 0L;
+    /** Per-speed breakdown of walked time, appended as the session ticks. */
+    public List<SpeedSegment> segments = new ArrayList<>();
 
     public SessionData copy() {
         SessionData copy = new SessionData();
@@ -36,6 +49,14 @@ public class SessionData {
         copy.calories = calories;
         copy.completed = completed;
         copy.createdMillis = createdMillis;
+        copy.intervalWalkSeconds = intervalWalkSeconds;
+        copy.intervalBreakSeconds = intervalBreakSeconds;
+        copy.intervalWalking = intervalWalking;
+        copy.intervalPhaseSeconds = intervalPhaseSeconds;
+        copy.segments = new ArrayList<>();
+        for (SpeedSegment segment : segments) {
+            copy.segments.add(segment.copy());
+        }
         return copy;
     }
 }

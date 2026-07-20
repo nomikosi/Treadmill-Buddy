@@ -1,9 +1,13 @@
 package com.codex.desktreadmill.ui;
 
 import com.codex.desktreadmill.TreadmillBundle;
+import com.codex.desktreadmill.engine.SessionStats;
 import com.codex.desktreadmill.engine.WorkoutEngine;
+import com.codex.desktreadmill.engine.WorkoutMath;
+import com.codex.desktreadmill.model.GoalType;
 import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.SessionMode;
+import com.codex.desktreadmill.settings.TreadmillSettings;
 import com.intellij.ide.DataManager;
 import com.intellij.openapi.actionSystem.ActionManager;
 import com.intellij.openapi.actionSystem.AnAction;
@@ -20,12 +24,20 @@ import org.jetbrains.annotations.Nullable;
 import javax.swing.SwingUtilities;
 import java.awt.Component;
 import java.awt.event.MouseEvent;
+import java.time.LocalDate;
+import java.time.ZoneId;
 
 public final class TreadmillStatusBarWidget implements StatusBarWidget, StatusBarWidget.TextPresentation, WorkoutEngine.Listener {
     public static final String WIDGET_ID = "TreadmillBuddyWidget";
 
+    /** Goal progress needs a scan over saved sessions; refresh it at most this often. */
+    private static final long GOAL_REFRESH_MILLIS = 5_000L;
+    private static final String[] GOAL_GLYPHS = {"○", "◔", "◑", "◕", "●"};
+
     private final WorkoutEngine engine = WorkoutEngine.getInstance();
     private StatusBar statusBar;
+    private String cachedGoalText = "";
+    private long goalTextComputedMillis;
 
     @Override
     public @NotNull String ID() {
@@ -56,12 +68,48 @@ public final class TreadmillStatusBarWidget implements StatusBarWidget, StatusBa
             return "";
         }
         SessionMode mode = SessionMode.fromId(session.modeId);
-        long seconds = mode == SessionMode.MARATHON ? session.elapsedSeconds : session.remainingSeconds;
+        long seconds;
+        String blockPrefix = "";
+        if (mode == SessionMode.INTERVAL) {
+            seconds = WorkoutMath.intervalBlockRemaining(session);
+            blockPrefix = (session.intervalWalking ? "Walk " : "Break ");
+        } else {
+            seconds = mode == SessionMode.MARATHON ? session.elapsedSeconds : session.remainingSeconds;
+        }
         TimeFormatter.DisplayTime time = TimeFormatter.displayTime(seconds);
         String prefix = time.getDayPrefix().isBlank() ? "" : time.getDayPrefix() + " ";
         return TreadmillBundle.message("widget.text",
-                prefix + time.getTimeText(),
-                String.format("%.0f", session.calories));
+                blockPrefix + prefix + time.getTimeText(),
+                String.format("%.0f", session.calories)) + goalText();
+    }
+
+    /** " · ◑ 52%" for the daily goal, cached because it scans saved sessions. */
+    private String goalText() {
+        long now = System.currentTimeMillis();
+        if (now - goalTextComputedMillis < GOAL_REFRESH_MILLIS) {
+            return cachedGoalText;
+        }
+        goalTextComputedMillis = now;
+        TreadmillSettings settings = TreadmillSettings.getInstance();
+        GoalType goalType = settings.getDailyGoalType();
+        double target = settings.getDailyGoalValue();
+        if (goalType == GoalType.NONE || target <= 0) {
+            cachedGoalText = "";
+            return cachedGoalText;
+        }
+        ZoneId zone = ZoneId.systemDefault();
+        long startOfToday = LocalDate.now(zone).atStartOfDay(zone).toInstant().toEpochMilli();
+        SessionStats.Totals today = SessionStats.totalsSince(settings.getSessions(), startOfToday);
+        double progress = switch (goalType) {
+            case STEPS -> today.steps;
+            case DISTANCE -> today.distanceKm;
+            case CALORIES -> today.calories;
+            case NONE -> 0.0;
+        };
+        int percent = (int) Math.max(0, Math.round(progress / target * 100));
+        String glyph = GOAL_GLYPHS[Math.min(GOAL_GLYPHS.length - 1, percent * (GOAL_GLYPHS.length - 1) / 100)];
+        cachedGoalText = " · " + glyph + " " + Math.min(percent, 999) + "%";
+        return cachedGoalText;
     }
 
     @Override
@@ -95,6 +143,7 @@ public final class TreadmillStatusBarWidget implements StatusBarWidget, StatusBa
                 "TreadmillBuddy.TogglePause",
                 "TreadmillBuddy.SaveSession",
                 "TreadmillBuddy.NewSession",
+                "TreadmillBuddy.KeepRunningWhenIdle",
                 "TreadmillBuddy.OpenToolWindow"
         }) {
             AnAction action = actionManager.getAction(actionId);

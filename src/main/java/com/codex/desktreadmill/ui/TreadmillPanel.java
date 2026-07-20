@@ -9,6 +9,8 @@ import com.codex.desktreadmill.engine.WorkoutMath;
 import com.codex.desktreadmill.model.GoalType;
 import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.SessionMode;
+import com.codex.desktreadmill.model.SpeedPreset;
+import com.codex.desktreadmill.model.SpeedSegment;
 import com.codex.desktreadmill.model.UnitSystem;
 import com.codex.desktreadmill.model.UserProfile;
 import com.codex.desktreadmill.settings.ProfileDialog;
@@ -17,8 +19,7 @@ import com.codex.desktreadmill.settings.TreadmillSettings;
 import com.intellij.icons.AllIcons;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.actionSystem.AnActionEvent;
-import com.intellij.openapi.fileChooser.FileChooserFactory;
-import com.intellij.openapi.fileChooser.FileSaverDescriptor;
+import com.intellij.openapi.actionSystem.DefaultActionGroup;
 import com.intellij.openapi.options.ShowSettingsUtil;
 import com.intellij.openapi.project.DumbAwareAction;
 import com.intellij.openapi.project.Project;
@@ -26,8 +27,7 @@ import com.intellij.openapi.ui.ComboBox;
 import com.intellij.openapi.ui.ComponentValidator;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.ui.ValidationInfo;
-import com.intellij.openapi.vfs.VirtualFile;
-import com.intellij.openapi.vfs.VirtualFileWrapper;
+import com.intellij.openapi.ui.popup.JBPopupFactory;
 import com.intellij.ui.CollectionListModel;
 import com.intellij.ui.ColoredListCellRenderer;
 import com.intellij.ui.DocumentAdapter;
@@ -63,15 +63,15 @@ import java.awt.GridLayout;
 import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
-import java.io.IOException;
-import java.nio.file.Files;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 
 public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listener, Disposable {
@@ -91,10 +91,14 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
     private final JBTextField inclineField = new JBTextField("0");
     private final JBTextField calorieTargetField = new JBTextField("300");
     private final JBTextField fatTargetField = new JBTextField("0.5");
+    private final JBTextField walkMinutesField = new JBTextField("25");
+    private final JBTextField breakMinutesField = new JBTextField("5");
     private final JBLabel statusLabel = new JBLabel(TreadmillBundle.message("status.ready"));
     private final JBLabel statsLabel = new JBLabel();
     private final DailyDistanceChart dailyChart = new DailyDistanceChart();
+    private final ActivityHeatmap heatmap = new ActivityHeatmap();
     private final JProgressBar goalProgressBar = new JProgressBar(0, 100);
+    private final JProgressBar weeklyGoalProgressBar = new JProgressBar(0, 100);
     private final JBLabel speedRowLabel = new JBLabel();
     private final JBLabel fatTargetRowLabel = new JBLabel();
     private final JBLabel distanceLabel = valueLabel("0.00 km");
@@ -190,20 +194,91 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         JPanel fatCard = FormBuilder.createFormBuilder()
                 .addLabeledComponent(fatTargetRowLabel, fatTargetField, 1, false)
                 .getPanel();
+        JPanel intervalCard = FormBuilder.createFormBuilder()
+                .addLabeledComponent(new JBLabel("Walk block (minutes)"), walkMinutesField, 1, false)
+                .addLabeledComponent(new JBLabel("Break block (minutes)"), breakMinutesField, 1, false)
+                .getPanel();
         JPanel emptyCard = new JPanel(new BorderLayout());
         targetPanel.add(emptyCard, SessionMode.MARATHON.name());
         targetPanel.add(calorieCard, SessionMode.CALORIE_BURN.name());
         targetPanel.add(fatCard, SessionMode.FAT_BURN.name());
+        targetPanel.add(intervalCard, SessionMode.INTERVAL.name());
 
         return FormBuilder.createFormBuilder()
                 .addLabeledComponent(new JBLabel("Saved sessions"), createSavedSessionsPanel(), 1, false)
                 .addLabeledComponent(new JBLabel("Mode"), modeCombo, 1, false)
                 .addLabeledComponent(new JBLabel("Session name"), sessionNameField, 1, false)
-                .addLabeledComponent(speedRowLabel, speedField, 1, false)
+                .addLabeledComponent(speedRowLabel, createSpeedRow(), 1, false)
                 .addLabeledComponent(new JBLabel("Incline (%)"), inclineField, 1, false)
                 .addLabeledComponent(new JBLabel("Calorie algorithm"), algorithmCombo, 1, false)
                 .addComponent(targetPanel)
                 .getPanel();
+    }
+
+    private JComponent createSpeedRow() {
+        JButton presetsButton = new JButton("Presets");
+        presetsButton.setToolTipText("Switch to a saved treadmill speed, or save the current one");
+        presetsButton.addActionListener(event -> showPresetsPopup(presetsButton));
+        JPanel row = new JPanel(new BorderLayout(6, 0));
+        row.add(speedField, BorderLayout.CENTER);
+        row.add(presetsButton, BorderLayout.EAST);
+        return row;
+    }
+
+    private void showPresetsPopup(JComponent anchor) {
+        DefaultActionGroup group = new DefaultActionGroup();
+        List<SpeedPreset> presets = settings.getSpeedPresets();
+        for (SpeedPreset preset : presets) {
+            String label = String.format("%s  (%s %s)", preset.name,
+                    format(currentUnits.speedFromKmh(preset.speedKmh)), currentUnits.speedUnit());
+            group.add(new DumbAwareAction(label) {
+                @Override
+                public void actionPerformed(@NotNull AnActionEvent event) {
+                    speedField.setText(format(currentUnits.speedFromKmh(preset.speedKmh)));
+                }
+            });
+        }
+        if (!presets.isEmpty()) {
+            group.addSeparator();
+        }
+        group.add(new DumbAwareAction("Save Current Speed as Preset…") {
+            @Override
+            public void actionPerformed(@NotNull AnActionEvent event) {
+                saveSpeedPreset();
+            }
+        });
+        if (!presets.isEmpty()) {
+            DefaultActionGroup removeGroup = DefaultActionGroup.createPopupGroup(() -> "Remove Preset");
+            for (SpeedPreset preset : presets) {
+                removeGroup.add(new DumbAwareAction(preset.name) {
+                    @Override
+                    public void actionPerformed(@NotNull AnActionEvent event) {
+                        settings.removeSpeedPreset(preset.name);
+                    }
+                });
+            }
+            group.add(removeGroup);
+        }
+        JBPopupFactory.getInstance()
+                .createActionGroupPopup("Speed Presets", group,
+                        com.intellij.ide.DataManager.getInstance().getDataContext(anchor),
+                        JBPopupFactory.ActionSelectionAid.SPEEDSEARCH, true)
+                .showUnderneathOf(anchor);
+    }
+
+    private void saveSpeedPreset() {
+        double speedKmh = parseSpeedKmh();
+        if (speedKmh <= 0 || speedKmh > 25) {
+            showError(speedRangeMessage());
+            return;
+        }
+        String defaultName = format(currentUnits.speedFromKmh(speedKmh)) + " " + currentUnits.speedUnit();
+        String name = Messages.showInputDialog(project,
+                "Preset name:", "Save Speed Preset", null, defaultName, null);
+        if (name == null || name.isBlank()) {
+            return;
+        }
+        settings.addSpeedPreset(new SpeedPreset(name.trim(), speedKmh));
     }
 
     private JComponent createMetrics() {
@@ -223,12 +298,21 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         goalProgressBar.setStringPainted(true);
         goalProgressBar.setVisible(false);
         goalProgressBar.setAlignmentX(CENTER_ALIGNMENT);
+        weeklyGoalProgressBar.setStringPainted(true);
+        weeklyGoalProgressBar.setVisible(false);
+        weeklyGoalProgressBar.setAlignmentX(CENTER_ALIGNMENT);
         dailyChart.setAlignmentX(CENTER_ALIGNMENT);
+        heatmap.setAlignmentX(CENTER_ALIGNMENT);
+        heatmap.setVisible(false);
         statsLabel.setAlignmentX(CENTER_ALIGNMENT);
         statusLabel.setAlignmentX(CENTER_ALIGNMENT);
         south.add(goalProgressBar);
         south.add(Box.createVerticalStrut(4));
+        south.add(weeklyGoalProgressBar);
+        south.add(Box.createVerticalStrut(4));
         south.add(dailyChart);
+        south.add(Box.createVerticalStrut(4));
+        south.add(heatmap);
         south.add(Box.createVerticalStrut(2));
         south.add(statsLabel);
         south.add(statusLabel);
@@ -298,7 +382,27 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
                 .addExtraAction(new DumbAwareAction("Export CSV", "Export all saved sessions to a CSV file", AllIcons.ToolbarDecorator.Export) {
                     @Override
                     public void actionPerformed(@NotNull AnActionEvent event) {
-                        exportSessionsCsv();
+                        SessionTransfer.exportCsv(project, settings);
+                    }
+                })
+                .addExtraAction(new DumbAwareAction("Export JSON", "Export all saved sessions to a JSON file", AllIcons.FileTypes.Json) {
+                    @Override
+                    public void actionPerformed(@NotNull AnActionEvent event) {
+                        SessionTransfer.exportJson(project, settings);
+                    }
+                })
+                .addExtraAction(new DumbAwareAction("Export TCX", "Export the selected session as a TCX workout for Garmin Connect, Strava, and similar services", AllIcons.Actions.Upload) {
+                    @Override
+                    public void actionPerformed(@NotNull AnActionEvent event) {
+                        SessionTransfer.exportTcx(project, sessionsList.getSelectedValue());
+                    }
+                })
+                .addExtraAction(new DumbAwareAction("Import CSV", "Import sessions from a CSV file exported by Treadmill Buddy", AllIcons.ToolbarDecorator.Import) {
+                    @Override
+                    public void actionPerformed(@NotNull AnActionEvent event) {
+                        if (SessionTransfer.importCsv(project, settings) > 0) {
+                            engine.notifySessionsChanged();
+                        }
                     }
                 })
                 .createPanel();
@@ -419,6 +523,16 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
             session.targetCalories = targetCalories;
             session.targetSeconds = seconds;
             session.remainingSeconds = seconds;
+        } else if (mode == SessionMode.INTERVAL) {
+            long walkMinutes = Math.round(parseDouble(walkMinutesField.getText()));
+            long breakMinutes = Math.round(parseDouble(breakMinutesField.getText()));
+            if (walkMinutes <= 0 || walkMinutes > 720 || breakMinutes <= 0 || breakMinutes > 720) {
+                showError("Enter walk and break blocks between 1 and 720 minutes.");
+                return null;
+            }
+            session.intervalWalkSeconds = walkMinutes * 60L;
+            session.intervalBreakSeconds = breakMinutes * 60L;
+            session.intervalWalking = true;
         }
         WorkoutMath.recalcRemaining(session, profile);
         return session;
@@ -430,7 +544,11 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         long seconds;
         if (session != null) {
             SessionMode mode = SessionMode.fromId(session.modeId);
-            seconds = mode == SessionMode.MARATHON ? session.elapsedSeconds : session.remainingSeconds;
+            if (mode == SessionMode.INTERVAL) {
+                seconds = WorkoutMath.intervalBlockRemaining(session);
+            } else {
+                seconds = mode == SessionMode.MARATHON ? session.elapsedSeconds : session.remainingSeconds;
+            }
         } else {
             seconds = previewSecondsFromInputs();
         }
@@ -458,13 +576,22 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
             targetLabel.setText("Open");
         } else if (mode == SessionMode.CALORIE_BURN) {
             targetLabel.setText(String.format("%.0f kcal", session.targetCalories));
+        } else if (mode == SessionMode.INTERVAL) {
+            targetLabel.setText(String.format("%d / %d min",
+                    session.intervalWalkSeconds / 60, session.intervalBreakSeconds / 60));
         } else {
             targetLabel.setText(String.format("%.2f %s",
                     currentUnits.weightFromKg(session.targetFatKg), currentUnits.weightUnit()));
         }
+        distanceLabel.setToolTipText(segmentsTooltip(session));
         String status = engine.isRunning()
                 ? TreadmillBundle.message("status.running")
                 : session.completed ? TreadmillBundle.message("status.complete") : TreadmillBundle.message("status.paused");
+        if (mode == SessionMode.INTERVAL && engine.isRunning()) {
+            status += session.intervalWalking
+                    ? " - " + TreadmillBundle.message("status.interval.walk")
+                    : " - " + TreadmillBundle.message("status.interval.break");
+        }
         String statusNote = engine.getStatusNote();
         statusLabel.setText(statusNote.isBlank()
                 ? status + " - " + session.name
@@ -547,12 +674,13 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
 
     private void updateStatsLabel(List<SessionData> sessions) {
         ZoneId zone = ZoneId.systemDefault();
-        long startOfToday = LocalDate.now(zone).atStartOfDay(zone).toInstant().toEpochMilli();
-        long startOfWeek = LocalDate.now(zone).minusDays(6).atStartOfDay(zone).toInstant().toEpochMilli();
+        LocalDate todayDate = LocalDate.now(zone);
+        long startOfToday = todayDate.atStartOfDay(zone).toInstant().toEpochMilli();
+        long startOfWeek = todayDate.minusDays(6).atStartOfDay(zone).toInstant().toEpochMilli();
         SessionStats.Totals today = SessionStats.totalsSince(sessions, startOfToday);
         SessionStats.Totals week = SessionStats.totalsSince(sessions, startOfWeek);
         SessionStats.Totals allTime = SessionStats.totalsSince(sessions, 0L);
-        double[] daily = SessionStats.dailyDistanceKm(sessions, LocalDate.now(zone), zone, 14);
+        double[] daily = SessionStats.dailyDistanceKm(sessions, todayDate, zone, 14);
         dailyChart.setData(daily);
         int walkingDays = 0;
         for (double km : daily) {
@@ -562,8 +690,18 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         }
         // A single bar reads as a stray box, and today's numbers are already in the stats line.
         dailyChart.setVisible(walkingDays >= 2);
-        int streak = SessionStats.streakDays(daily);
+
+        Map<Long, Double> kmByDay = SessionStats.distanceByEpochDay(sessions, zone);
+        heatmap.setData(kmByDay, todayDate, currentUnits.distanceUnit(), currentUnits.distanceFromKm(1.0));
+        heatmap.setVisible(kmByDay.size() >= 5);
+
+        int streak = SessionStats.streakDays(sessions, todayDate, zone, settings.getStreakRestDaysPerWeek());
         String streakText = streak > 1 ? "   |   Streak " + streak + " days" : "";
+        // Late in the day with no walking yet, a live streak is one quiet
+        // evening away from resetting - worth a nudge.
+        if (streak >= 2 && today.distanceKm == 0.0 && LocalTime.now().getHour() >= 17) {
+            streakText += " (at risk - walk today!)";
+        }
         String unit = currentUnits.distanceUnit();
         statsLabel.setText(String.format(
                 "Today %.1f %s · %.0f kcal   |   7 days %.1f %s · %.0f kcal   |   All time %.1f %s · %.0f kcal%s",
@@ -572,32 +710,52 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
                 currentUnits.distanceFromKm(allTime.distanceKm), unit, allTime.calories,
                 streakText
         ));
-        updateGoalProgress(today);
-        statsLabel.setToolTipText(String.format(
+        updateGoalProgress(sessions, today, zone, todayDate);
+        SessionStats.Records records = SessionStats.records(sessions, zone);
+        StringBuilder tooltip = new StringBuilder(String.format(
                 "Today: %,d steps in %d sessions | Last 7 days: %,d steps in %d sessions | All time: %,d steps in %d sessions",
                 today.steps, today.sessionCount,
                 week.steps, week.sessionCount,
                 allTime.steps, allTime.sessionCount
         ));
+        if (records.longestSessionSeconds > 0) {
+            tooltip.append(String.format(
+                    " | Records: longest session %s, best day %.1f %s and %,d steps",
+                    TimeFormatter.displayTime(records.longestSessionSeconds).getTimeText(),
+                    currentUnits.distanceFromKm(records.bestDayDistanceKm), unit,
+                    records.bestDaySteps));
+        }
+        statsLabel.setToolTipText(tooltip.toString());
     }
 
-    private void updateGoalProgress(SessionStats.Totals today) {
-        GoalType goalType = settings.getDailyGoalType();
-        double target = settings.getDailyGoalValue();
+    private void updateGoalProgress(List<SessionData> sessions, SessionStats.Totals today, ZoneId zone, LocalDate todayDate) {
+        applyGoalProgress(goalProgressBar, "Daily goal", settings.getDailyGoalType(), settings.getDailyGoalValue(), today);
+        GoalType weeklyType = settings.getWeeklyGoalType();
+        if (weeklyType == GoalType.NONE || settings.getWeeklyGoalValue() <= 0) {
+            weeklyGoalProgressBar.setVisible(false);
+            return;
+        }
+        long startOfCalendarWeek = todayDate.with(java.time.DayOfWeek.MONDAY)
+                .atStartOfDay(zone).toInstant().toEpochMilli();
+        SessionStats.Totals thisWeek = SessionStats.totalsSince(sessions, startOfCalendarWeek);
+        applyGoalProgress(weeklyGoalProgressBar, "Weekly goal", weeklyType, settings.getWeeklyGoalValue(), thisWeek);
+    }
+
+    private void applyGoalProgress(JProgressBar bar, String label, GoalType goalType, double target, SessionStats.Totals totals) {
         if (goalType == GoalType.NONE || target <= 0) {
-            goalProgressBar.setVisible(false);
+            bar.setVisible(false);
             return;
         }
         double progress = switch (goalType) {
-            case STEPS -> today.steps;
-            case DISTANCE -> today.distanceKm;
-            case CALORIES -> today.calories;
+            case STEPS -> totals.steps;
+            case DISTANCE -> totals.distanceKm;
+            case CALORIES -> totals.calories;
             case NONE -> 0.0;
         };
         int percent = (int) Math.max(0, Math.min(100, Math.round(progress / target * 100)));
-        goalProgressBar.setVisible(true);
-        goalProgressBar.setValue(percent);
-        goalProgressBar.setString("Daily goal: "
+        bar.setVisible(true);
+        bar.setValue(percent);
+        bar.setString(label + ": "
                 + goalType.formatValue(progress, currentUnits)
                 + " / " + goalType.formatValue(target, currentUnits)
                 + " (" + percent + "%)");
@@ -673,6 +831,10 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
             algorithmCombo.setSelectedItem(CalorieAlgorithm.fromId(session.algorithmId));
             calorieTargetField.setText(format(session.targetCalories));
             fatTargetField.setText(format(currentUnits.weightFromKg(session.targetFatKg)));
+            if (session.intervalWalkSeconds > 0) {
+                walkMinutesField.setText(String.valueOf(session.intervalWalkSeconds / 60));
+                breakMinutesField.setText(String.valueOf(session.intervalBreakSeconds / 60));
+            }
         } finally {
             populatingFields = false;
         }
@@ -758,6 +920,18 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
                     ? new ValidationInfo("Enter a KG target greater than zero", fatTargetField)
                     : null;
         });
+        installValidator(walkMinutesField, () -> intervalMinutesValidation(walkMinutesField));
+        installValidator(breakMinutesField, () -> intervalMinutesValidation(breakMinutesField));
+    }
+
+    private ValidationInfo intervalMinutesValidation(JBTextField field) {
+        if (selectedMode() != SessionMode.INTERVAL) {
+            return null;
+        }
+        double minutes = parseDouble(field.getText());
+        return minutes <= 0 || minutes > 720
+                ? new ValidationInfo("Enter minutes between 1 and 720", field)
+                : null;
     }
 
     private void installValidator(JBTextField field, Supplier<ValidationInfo> validator) {
@@ -789,6 +963,8 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         };
         calorieTargetField.getDocument().addDocumentListener(listener);
         fatTargetField.getDocument().addDocumentListener(listener);
+        walkMinutesField.getDocument().addDocumentListener(listener);
+        breakMinutesField.getDocument().addDocumentListener(listener);
     }
 
     private void speedChanged() {
@@ -849,10 +1025,28 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         }
     }
 
+    /** Multi-speed sessions get a per-speed breakdown tooltip on the distance tile. */
+    private String segmentsTooltip(SessionData session) {
+        if (session.segments.size() < 2) {
+            return null;
+        }
+        StringBuilder text = new StringBuilder("<html><b>Speed breakdown</b><br>");
+        for (SpeedSegment segment : session.segments) {
+            String duration = segment.seconds < 60 ? "&lt;1 min" : (segment.seconds / 60) + " min";
+            text.append(String.format("%s @ %s %s<br>",
+                    duration, format(currentUnits.speedFromKmh(segment.speedKmh)), currentUnits.speedUnit()));
+        }
+        return text.append("</html>").toString();
+    }
+
     private long previewSecondsFromInputs() {
         SessionMode mode = selectedMode();
         if (mode == SessionMode.MARATHON) {
             return 0L;
+        }
+        if (mode == SessionMode.INTERVAL) {
+            double walkMinutes = parseDouble(walkMinutesField.getText());
+            return walkMinutes > 0 && walkMinutes <= 720 ? Math.round(walkMinutes) * 60L : 0L;
         }
         double speed = parseSpeedKmh();
         if (speed <= 0 || speed > 25) {
@@ -885,87 +1079,15 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
             double targetCalories = parseDouble(calorieTargetField.getText());
             return targetCalories > 0 ? String.format("%.0f kcal", targetCalories) : "-";
         }
+        if (mode == SessionMode.INTERVAL) {
+            double walkMinutes = parseDouble(walkMinutesField.getText());
+            double breakMinutes = parseDouble(breakMinutesField.getText());
+            return walkMinutes > 0 && breakMinutes > 0
+                    ? String.format("%d / %d min", Math.round(walkMinutes), Math.round(breakMinutes))
+                    : "-";
+        }
         double fatInput = parseDouble(fatTargetField.getText());
         return fatInput > 0 ? String.format("%.2f %s", fatInput, currentUnits.weightUnit()) : "-";
-    }
-
-    private void exportSessionsCsv() {
-        List<SessionData> sessions = settings.getSessions();
-        if (sessions.isEmpty()) {
-            TreadmillNotifications.info(project,
-                    TreadmillBundle.message("notification.title"),
-                    TreadmillBundle.message("notification.export.none"));
-            return;
-        }
-        FileSaverDescriptor descriptor = createSaveDescriptor(
-                "Export Treadmill Sessions",
-                "Save all saved sessions as a CSV file"
-        );
-        descriptor.withExtensionFilter("csv");
-        VirtualFileWrapper wrapper = FileChooserFactory.getInstance()
-                .createSaveFileDialog(descriptor, project)
-                .save((VirtualFile) null, "treadmill-sessions.csv");
-        if (wrapper == null) {
-            return;
-        }
-        StringBuilder csv = new StringBuilder(
-                "name,mode,algorithm,created,speed_kmh,incline_percent,elapsed_seconds,distance_km,steps,calories,target_calories,target_fat_kg,completed\n");
-        for (SessionData session : sessions) {
-            csv.append(csvField(session.name)).append(',')
-                    .append(SessionMode.fromId(session.modeId).getLabel()).append(',')
-                    .append(CalorieAlgorithm.fromId(session.algorithmId).getLabel()).append(',')
-                    .append(session.createdMillis > 0
-                            ? LocalDateTime.ofInstant(Instant.ofEpochMilli(session.createdMillis), ZoneId.systemDefault())
-                            .format(SESSION_NAME_FORMAT)
-                            : "").append(',')
-                    .append(String.format("%.1f", session.speedKmh)).append(',')
-                    .append(String.format("%.1f", session.inclinePercent)).append(',')
-                    .append(session.elapsedSeconds).append(',')
-                    .append(String.format("%.3f", session.distanceKm)).append(',')
-                    .append(session.steps).append(',')
-                    .append(String.format("%.1f", session.calories)).append(',')
-                    .append(String.format("%.1f", session.targetCalories)).append(',')
-                    .append(String.format("%.2f", session.targetFatKg)).append(',')
-                    .append(session.completed)
-                    .append('\n');
-        }
-        try {
-            Files.writeString(wrapper.getFile().toPath(), csv.toString());
-            TreadmillNotifications.info(project,
-                    TreadmillBundle.message("notification.title"),
-                    TreadmillBundle.message("notification.export.done", sessions.size(), wrapper.getFile().getName()));
-        } catch (IOException exception) {
-            showError("Could not write CSV file: " + exception.getMessage());
-        }
-    }
-
-    /**
-     * 2024.3 ships only the varargs FileSaverDescriptor constructor, which 2025.1+
-     * deprecates in favor of the two-arg one that 2024.3 lacks. A direct call to
-     * either breaks one side (deprecation warning vs. NoSuchMethodError), so pick
-     * the constructor reflectively at runtime.
-     */
-    private static FileSaverDescriptor createSaveDescriptor(String title, String description) {
-        try {
-            try {
-                return FileSaverDescriptor.class
-                        .getConstructor(String.class, String.class)
-                        .newInstance(title, description);
-            } catch (NoSuchMethodException onlyVarargsAvailable) {
-                return FileSaverDescriptor.class
-                        .getConstructor(String.class, String.class, String[].class)
-                        .newInstance(title, description, new String[0]);
-            }
-        } catch (ReflectiveOperationException exception) {
-            throw new IllegalStateException("No usable FileSaverDescriptor constructor", exception);
-        }
-    }
-
-    private static String csvField(String value) {
-        if (value.contains(",") || value.contains("\"") || value.contains("\n")) {
-            return '"' + value.replace("\"", "\"\"") + '"';
-        }
-        return value;
     }
 
     private String describeSession(SessionData session) {

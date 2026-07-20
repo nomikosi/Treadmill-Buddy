@@ -7,6 +7,7 @@ import com.codex.desktreadmill.model.UserProfile;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WorkoutMathTest {
@@ -51,6 +52,61 @@ class WorkoutMathTest {
         double expectedCalories = CalorieAlgorithm.ACSM_FLAT.kcalPerMinute(profile(), 6.0) * 60.0;
         assertEquals(expectedCalories, session.calories, 0.01);
         assertEquals(WorkoutMath.stepsForDistance(6.0, 170.0), session.steps);
+    }
+
+    @Test
+    void advanceOneSecondRecordsSpeedSegments() {
+        SessionData session = new SessionData();
+        session.modeId = SessionMode.MARATHON.name();
+        session.algorithmId = CalorieAlgorithm.ACSM_FLAT.name();
+        session.speedKmh = 3.0;
+        for (int i = 0; i < 10; i++) {
+            WorkoutMath.advanceOneSecond(session, profile());
+        }
+        session.speedKmh = 5.0;
+        for (int i = 0; i < 20; i++) {
+            WorkoutMath.advanceOneSecond(session, profile());
+        }
+        assertEquals(2, session.segments.size());
+        assertEquals(3.0, session.segments.get(0).speedKmh, 0.0001);
+        assertEquals(10L, session.segments.get(0).seconds);
+        assertEquals(5.0, session.segments.get(1).speedKmh, 0.0001);
+        assertEquals(20L, session.segments.get(1).seconds);
+    }
+
+    @Test
+    void intervalBreakBlocksDontAccumulateMetrics() {
+        SessionData session = new SessionData();
+        session.modeId = SessionMode.INTERVAL.name();
+        session.algorithmId = CalorieAlgorithm.ACSM_FLAT.name();
+        session.speedKmh = 5.0;
+        session.intervalWalkSeconds = 5L;
+        session.intervalBreakSeconds = 3L;
+
+        boolean switched = false;
+        for (int i = 0; i < 5; i++) {
+            switched = WorkoutMath.advanceIntervalSecond(session, profile());
+        }
+        assertTrue(switched);
+        assertEquals(5L, session.elapsedSeconds);
+        assertFalse(session.intervalWalking);
+        assertEquals(3L, WorkoutMath.intervalBlockRemaining(session));
+
+        for (int i = 0; i < 3; i++) {
+            switched = WorkoutMath.advanceIntervalSecond(session, profile());
+        }
+        assertTrue(switched);
+        assertTrue(session.intervalWalking);
+        assertEquals(5L, session.elapsedSeconds);
+    }
+
+    @Test
+    void recalcRemainingIsZeroForIntervalMode() {
+        SessionData session = new SessionData();
+        session.modeId = SessionMode.INTERVAL.name();
+        session.remainingSeconds = 500L;
+        WorkoutMath.recalcRemaining(session, profile());
+        assertEquals(0L, session.remainingSeconds);
     }
 
     @Test

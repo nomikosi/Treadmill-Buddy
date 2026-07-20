@@ -88,6 +88,77 @@ class SessionStatsTest {
     }
 
     @Test
+    void fullHistoryStreakCountsWalkedDays() {
+        ZoneId zone = ZoneOffset.UTC;
+        LocalDate today = LocalDate.of(2026, 7, 15);
+        List<SessionData> sessions = List.of(
+                session(epochMillisAtStartOfDay(today, zone), 1.0, 100, 10.0),
+                session(epochMillisAtStartOfDay(today.minusDays(1), zone), 1.0, 100, 10.0),
+                session(epochMillisAtStartOfDay(today.minusDays(2), zone), 1.0, 100, 10.0)
+        );
+        assertEquals(3, SessionStats.streakDays(sessions, today, zone, 0));
+    }
+
+    @Test
+    void restDayKeepsStreakAliveWithoutCounting() {
+        ZoneId zone = ZoneOffset.UTC;
+        LocalDate today = LocalDate.of(2026, 7, 15);
+        // Walked today, gap yesterday, walked the two days before.
+        List<SessionData> sessions = List.of(
+                session(epochMillisAtStartOfDay(today, zone), 1.0, 100, 10.0),
+                session(epochMillisAtStartOfDay(today.minusDays(2), zone), 1.0, 100, 10.0),
+                session(epochMillisAtStartOfDay(today.minusDays(3), zone), 1.0, 100, 10.0)
+        );
+        assertEquals(1, SessionStats.streakDays(sessions, today, zone, 0));
+        assertEquals(3, SessionStats.streakDays(sessions, today, zone, 1));
+    }
+
+    @Test
+    void secondGapInSameWeekBreaksStreakWithOneRestDay() {
+        ZoneId zone = ZoneOffset.UTC;
+        // A Friday: two gaps in the same Monday-based week.
+        LocalDate today = LocalDate.of(2026, 7, 17);
+        List<SessionData> sessions = List.of(
+                session(epochMillisAtStartOfDay(today, zone), 1.0, 100, 10.0),
+                session(epochMillisAtStartOfDay(today.minusDays(2), zone), 1.0, 100, 10.0),
+                session(epochMillisAtStartOfDay(today.minusDays(4), zone), 1.0, 100, 10.0)
+        );
+        assertEquals(2, SessionStats.streakDays(sessions, today, zone, 1));
+    }
+
+    @Test
+    void quietTodayDoesNotEndFullHistoryStreak() {
+        ZoneId zone = ZoneOffset.UTC;
+        LocalDate today = LocalDate.of(2026, 7, 15);
+        List<SessionData> sessions = List.of(
+                session(epochMillisAtStartOfDay(today.minusDays(1), zone), 1.0, 100, 10.0),
+                session(epochMillisAtStartOfDay(today.minusDays(2), zone), 1.0, 100, 10.0)
+        );
+        assertEquals(2, SessionStats.streakDays(sessions, today, zone, 0));
+    }
+
+    @Test
+    void recordsFindLongestSessionAndBestDays() {
+        ZoneId zone = ZoneOffset.UTC;
+        LocalDate day = LocalDate.of(2026, 7, 10);
+        SessionData longest = session(epochMillisAtStartOfDay(day, zone), 2.0, 2000, 100.0);
+        longest.elapsedSeconds = 7200L;
+        longest.name = "Long walk";
+        List<SessionData> sessions = List.of(
+                longest,
+                // Two sessions on the same later day outweigh the single long one in distance.
+                session(epochMillisAtStartOfDay(day.plusDays(1), zone), 1.5, 1500, 80.0),
+                session(epochMillisAtStartOfDay(day.plusDays(1), zone) + 3_600_000L, 1.5, 1500, 80.0)
+        );
+        SessionStats.Records records = SessionStats.records(sessions, zone);
+        assertEquals(7200L, records.longestSessionSeconds);
+        assertEquals("Long walk", records.longestSessionName);
+        assertEquals(3.0, records.bestDayDistanceKm, 0.0001);
+        assertEquals(day.plusDays(1).toEpochDay(), records.bestDayDistanceEpochDay);
+        assertEquals(3000L, records.bestDaySteps);
+    }
+
+    @Test
     void streakCountsConsecutiveWalkingDays() {
         assertEquals(3, SessionStats.streakDays(new double[]{0.0, 1.0, 2.0, 1.0}));
         // A quiet today falls back to counting from yesterday.

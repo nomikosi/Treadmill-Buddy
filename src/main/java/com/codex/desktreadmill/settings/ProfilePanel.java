@@ -23,9 +23,13 @@ public final class ProfilePanel {
     private final ComboBox<CalorieAlgorithm> algorithmCombo = new ComboBox<>(CalorieAlgorithm.values());
     private final ComboBox<GoalType> goalTypeCombo = new ComboBox<>(GoalType.values());
     private final JBTextField goalValueField = new JBTextField();
+    private final ComboBox<GoalType> weeklyGoalTypeCombo = new ComboBox<>(GoalType.values());
+    private final JBTextField weeklyGoalValueField = new JBTextField();
+    private final JBTextField streakRestDaysField = new JBTextField();
     private final JBLabel weightLabel = new JBLabel();
     private final JBLabel heightLabel = new JBLabel();
     private final JBLabel goalValueLabel = new JBLabel("Goal value");
+    private final JBLabel weeklyGoalValueLabel = new JBLabel("Weekly goal value");
     private final JPanel panel;
 
     /** Units currently reflected by the field texts, so a combo switch can convert them. */
@@ -35,6 +39,7 @@ public final class ProfilePanel {
         ComboHelp.configureAlgorithmCombo(algorithmCombo, this::getAlgorithm);
         unitsCombo.addActionListener(event -> unitsSelectionChanged());
         goalTypeCombo.addActionListener(event -> goalTypeChanged());
+        weeklyGoalTypeCombo.addActionListener(event -> goalTypeChanged());
         panel = FormBuilder.createFormBuilder()
                 .addLabeledComponent(new JBLabel("Units"), unitsCombo, 1, false)
                 .addLabeledComponent(weightLabel, weightField, 1, false)
@@ -44,6 +49,9 @@ public final class ProfilePanel {
                 .addLabeledComponent(new JBLabel("Remind me to move (minutes, 0 = off)"), moveReminderField, 1, false)
                 .addLabeledComponent(new JBLabel("Daily goal"), goalTypeCombo, 1, false)
                 .addLabeledComponent(goalValueLabel, goalValueField, 1, false)
+                .addLabeledComponent(new JBLabel("Weekly goal"), weeklyGoalTypeCombo, 1, false)
+                .addLabeledComponent(weeklyGoalValueLabel, weeklyGoalValueField, 1, false)
+                .addLabeledComponent(new JBLabel("Streak rest days per week (0-2)"), streakRestDaysField, 1, false)
                 .addComponentFillVertically(new JPanel(new BorderLayout()), 0)
                 .getPanel();
         updateUnitLabels();
@@ -69,6 +77,13 @@ public final class ProfilePanel {
         goalValueField.setText(goalValue > 0
                 ? format(goalType == GoalType.DISTANCE ? fieldUnits.distanceFromKm(goalValue) : goalValue)
                 : "");
+        GoalType weeklyType = settings.getWeeklyGoalType();
+        weeklyGoalTypeCombo.setSelectedItem(weeklyType);
+        double weeklyValue = settings.getWeeklyGoalValue();
+        weeklyGoalValueField.setText(weeklyValue > 0
+                ? format(weeklyType == GoalType.DISTANCE ? fieldUnits.distanceFromKm(weeklyValue) : weeklyValue)
+                : "");
+        streakRestDaysField.setText(String.valueOf(settings.getStreakRestDaysPerWeek()));
         updateUnitLabels();
         goalTypeChanged();
     }
@@ -110,6 +125,28 @@ public final class ProfilePanel {
         return type == GoalType.DISTANCE ? getUnitSystem().distanceToKm(value) : value;
     }
 
+    public GoalType getWeeklyGoalType() {
+        Object selected = weeklyGoalTypeCombo.getSelectedItem();
+        return selected instanceof GoalType ? (GoalType) selected : GoalType.NONE;
+    }
+
+    /** Weekly goal value converted to metric terms (steps, km, or kcal). */
+    public double getWeeklyGoalValueMetric() {
+        GoalType type = getWeeklyGoalType();
+        if (type == GoalType.NONE) {
+            return 0.0;
+        }
+        double value = parseDouble(weeklyGoalValueField.getText());
+        if (value <= 0) {
+            return 0.0;
+        }
+        return type == GoalType.DISTANCE ? getUnitSystem().distanceToKm(value) : value;
+    }
+
+    public int getStreakRestDaysPerWeek() {
+        return parseInt(streakRestDaysField.getText());
+    }
+
     public int getAutoPauseMinutes() {
         return parseInt(autoPauseField.getText());
     }
@@ -141,6 +178,13 @@ public final class ProfilePanel {
         if (getDailyGoalType() != GoalType.NONE && parseDouble(goalValueField.getText()) <= 0) {
             return "Enter a daily goal value greater than zero, or set the goal to None.";
         }
+        if (getWeeklyGoalType() != GoalType.NONE && parseDouble(weeklyGoalValueField.getText()) <= 0) {
+            return "Enter a weekly goal value greater than zero, or set the goal to None.";
+        }
+        int restDays = getStreakRestDaysPerWeek();
+        if (restDays < 0 || restDays > 2) {
+            return "Enter streak rest days between 0 and 2.";
+        }
         return null;
     }
 
@@ -154,7 +198,10 @@ public final class ProfilePanel {
                 || getMoveReminderMinutes() != settings.getMoveReminderMinutes()
                 || getUnitSystem() != settings.getUnitSystem()
                 || getDailyGoalType() != settings.getDailyGoalType()
-                || Math.abs(getDailyGoalValueMetric() - settings.getDailyGoalValue()) > 0.001;
+                || Math.abs(getDailyGoalValueMetric() - settings.getDailyGoalValue()) > 0.001
+                || getWeeklyGoalType() != settings.getWeeklyGoalType()
+                || Math.abs(getWeeklyGoalValueMetric() - settings.getWeeklyGoalValue()) > 0.001
+                || getStreakRestDaysPerWeek() != settings.getStreakRestDaysPerWeek();
     }
 
     private void unitsSelectionChanged() {
@@ -166,6 +213,9 @@ public final class ProfilePanel {
         convertField(heightField, fieldUnits::heightToCm, units::heightFromCm);
         if (getDailyGoalType() == GoalType.DISTANCE) {
             convertField(goalValueField, fieldUnits::distanceToKm, units::distanceFromKm);
+        }
+        if (getWeeklyGoalType() == GoalType.DISTANCE) {
+            convertField(weeklyGoalValueField, fieldUnits::distanceToKm, units::distanceFromKm);
         }
         fieldUnits = units;
         updateUnitLabels();
@@ -191,19 +241,23 @@ public final class ProfilePanel {
 
     private void goalTypeChanged() {
         goalValueField.setEnabled(getDailyGoalType() != GoalType.NONE);
+        weeklyGoalValueField.setEnabled(getWeeklyGoalType() != GoalType.NONE);
         updateGoalValueLabel();
     }
 
     private void updateGoalValueLabel() {
-        GoalType type = getDailyGoalType();
+        goalValueLabel.setText("Goal value" + goalUnitSuffix(getDailyGoalType()));
+        weeklyGoalValueLabel.setText("Weekly goal value" + goalUnitSuffix(getWeeklyGoalType()));
+    }
+
+    private String goalUnitSuffix(GoalType type) {
         UnitSystem units = getUnitSystem();
-        String suffix = switch (type) {
+        return switch (type) {
             case STEPS -> " (steps)";
             case DISTANCE -> " (" + units.distanceUnit() + ")";
             case CALORIES -> " (kcal)";
             case NONE -> "";
         };
-        goalValueLabel.setText("Goal value" + suffix);
     }
 
     private static double parseDouble(String text) {
