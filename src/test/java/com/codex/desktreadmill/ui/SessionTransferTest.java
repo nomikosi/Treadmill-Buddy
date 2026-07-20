@@ -65,6 +65,18 @@ class SessionTransferTest {
     }
 
     @Test
+    void csvRoundTripPreservesIntervalBlockConfig() {
+        SessionData original = sampleSession();
+        original.modeId = SessionMode.INTERVAL.name();
+        original.intervalWalkSeconds = 1_500L;
+        original.intervalBreakSeconds = 300L;
+        SessionData parsed = roundTrip(original);
+        assertEquals(SessionMode.INTERVAL.name(), parsed.modeId);
+        assertEquals(1_500L, parsed.intervalWalkSeconds);
+        assertEquals(300L, parsed.intervalBreakSeconds);
+    }
+
+    @Test
     void parseCsvLineHandlesQuotedFieldsAndDoubledQuotes() {
         List<String> fields = SessionTransfer.parseCsvLine("plain,\"with, comma\",\"with \"\"quotes\"\"\",end");
         assertEquals(List.of("plain", "with, comma", "with \"quotes\"", "end"), fields);

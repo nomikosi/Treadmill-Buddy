@@ -232,13 +232,13 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
         state.lastWeeklyGoalAchievedWeek = epochDayOfWeekStart;
     }
 
-    /** Rest days per calendar week that don't break the walking streak (0-2). */
+    /** Rest days per calendar week that don't break the walking streak (0-6). */
     public int getStreakRestDaysPerWeek() {
         return state.streakRestDaysPerWeek;
     }
 
     public void setStreakRestDaysPerWeek(int restDays) {
-        state.streakRestDaysPerWeek = Math.max(0, Math.min(2, restDays));
+        state.streakRestDaysPerWeek = Math.max(0, Math.min(6, restDays));
     }
 
     /** Hour of day (1-23) from which a walk-free day shows "streak at risk"; 0 disables the hint. */

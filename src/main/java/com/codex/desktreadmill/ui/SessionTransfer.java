@@ -60,7 +60,7 @@ public final class SessionTransfer {
     /** Package-visible for round-trip tests. Always metric columns, locale-independent. */
     static String buildCsv(List<SessionData> sessions) {
         StringBuilder csv = new StringBuilder(
-                "name,mode,algorithm,created,speed_kmh,incline_percent,elapsed_seconds,distance_km,steps,calories,target_calories,target_fat_kg,completed\n");
+                "name,mode,algorithm,created,speed_kmh,incline_percent,elapsed_seconds,distance_km,steps,calories,target_calories,target_fat_kg,completed,interval_walk_seconds,interval_break_seconds\n");
         for (SessionData session : sessions) {
             csv.append(csvField(session.name)).append(',')
                     .append(SessionMode.fromId(session.modeId).getLabel()).append(',')
@@ -77,7 +77,9 @@ public final class SessionTransfer {
                     .append(String.format("%.1f", session.calories)).append(',')
                     .append(String.format("%.1f", session.targetCalories)).append(',')
                     .append(String.format("%.2f", session.targetFatKg)).append(',')
-                    .append(session.completed)
+                    .append(session.completed).append(',')
+                    .append(session.intervalWalkSeconds).append(',')
+                    .append(session.intervalBreakSeconds)
                     .append('\n');
         }
         return csv.toString();
@@ -313,6 +315,8 @@ public final class SessionTransfer {
                     case "target_calories" -> session.targetCalories = Double.parseDouble(value);
                     case "target_fat_kg" -> session.targetFatKg = Double.parseDouble(value);
                     case "completed" -> session.completed = Boolean.parseBoolean(value);
+                    case "interval_walk_seconds" -> session.intervalWalkSeconds = Long.parseLong(value);
+                    case "interval_break_seconds" -> session.intervalBreakSeconds = Long.parseLong(value);
                     default -> {
                     }
                 }

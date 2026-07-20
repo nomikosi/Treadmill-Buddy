@@ -11,9 +11,12 @@ import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBTextField;
 import com.intellij.util.ui.FormBuilder;
 
+import javax.swing.DefaultListCellRenderer;
 import javax.swing.JComponent;
+import javax.swing.JList;
 import javax.swing.JPanel;
 import java.awt.BorderLayout;
+import java.awt.Component;
 
 public final class ProfilePanel {
     private final ComboBox<UnitSystem> unitsCombo = new ComboBox<>(UnitSystem.values());
@@ -42,6 +45,10 @@ public final class ProfilePanel {
         unitsCombo.addActionListener(event -> unitsSelectionChanged());
         goalTypeCombo.addActionListener(event -> goalTypeChanged());
         weeklyGoalTypeCombo.addActionListener(event -> goalTypeChanged());
+        // GoalType.NONE renders as "No daily goal" by default; the weekly
+        // dropdown must say weekly instead.
+        goalTypeCombo.setRenderer(goalTypeRenderer("settings.goal.none.daily"));
+        weeklyGoalTypeCombo.setRenderer(goalTypeRenderer("settings.goal.none.weekly"));
         panel = FormBuilder.createFormBuilder()
                 .addLabeledComponent(new JBLabel(TreadmillBundle.message("settings.units")), unitsCombo, 1, false)
                 .addLabeledComponent(weightLabel, weightField, 1, false)
@@ -63,6 +70,21 @@ public final class ProfilePanel {
 
     public JComponent getComponent() {
         return panel;
+    }
+
+    private static DefaultListCellRenderer goalTypeRenderer(String noneLabelKey) {
+        return new DefaultListCellRenderer() {
+            @Override
+            public Component getListCellRendererComponent(
+                    JList<?> list, Object value, int index, boolean isSelected, boolean cellHasFocus
+            ) {
+                Component component = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+                if (value == GoalType.NONE) {
+                    setText(TreadmillBundle.message(noneLabelKey));
+                }
+                return component;
+            }
+        };
     }
 
     public void setValues(UserProfile profile, CalorieAlgorithm algorithm) {
@@ -192,7 +214,7 @@ public final class ProfilePanel {
             return TreadmillBundle.message("settings.validation.weeklyGoal");
         }
         int restDays = getStreakRestDaysPerWeek();
-        if (restDays < 0 || restDays > 2) {
+        if (restDays < 0 || restDays > 6) {
             return TreadmillBundle.message("settings.validation.restDays");
         }
         int riskHour = getStreakRiskHour();

@@ -70,11 +70,14 @@ public final class TreadmillStatusBarWidget implements StatusBarWidget, StatusBa
         SessionMode mode = SessionMode.fromId(session.modeId);
         long seconds;
         String blockPrefix = "";
-        if (mode == SessionMode.INTERVAL) {
+        if (mode == SessionMode.INTERVAL
+                && session.intervalWalkSeconds > 0 && session.intervalBreakSeconds > 0) {
             seconds = WorkoutMath.intervalBlockRemaining(session);
             blockPrefix = (session.intervalWalking ? "Walk " : "Break ");
         } else {
-            seconds = mode == SessionMode.MARATHON ? session.elapsedSeconds : session.remainingSeconds;
+            // Countdown modes show remaining; marathon and interval sessions
+            // without block config (old imports) count up.
+            seconds = mode.isCountdown() ? session.remainingSeconds : session.elapsedSeconds;
         }
         TimeFormatter.DisplayTime time = TimeFormatter.displayTime(seconds);
         String prefix = time.getDayPrefix().isBlank() ? "" : time.getDayPrefix() + " ";

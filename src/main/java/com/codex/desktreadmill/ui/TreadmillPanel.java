@@ -427,10 +427,12 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         long seconds;
         if (session != null) {
             SessionMode mode = SessionMode.fromId(session.modeId);
-            if (mode == SessionMode.INTERVAL) {
+            if (mode == SessionMode.INTERVAL && hasIntervalBlocks(session)) {
                 seconds = WorkoutMath.intervalBlockRemaining(session);
             } else {
-                seconds = mode == SessionMode.MARATHON ? session.elapsedSeconds : session.remainingSeconds;
+                // Interval sessions without block config (e.g. imported from an
+                // old CSV) fall back to counting up like a marathon session.
+                seconds = mode.isCountdown() ? session.remainingSeconds : session.elapsedSeconds;
             }
         } else {
             seconds = previewSecondsFromInputs();
@@ -439,7 +441,7 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         String clockPrefix = displayTime.getDayPrefix();
         // Interval blocks are always well under a day, so the day-prefix slot
         // is free to show which block the clock is counting down.
-        if (session != null && SessionMode.fromId(session.modeId) == SessionMode.INTERVAL) {
+        if (session != null && SessionMode.fromId(session.modeId) == SessionMode.INTERVAL && hasIntervalBlocks(session)) {
             clockPrefix = session.intervalWalking ? "Walk" : "Break";
         }
         clockDisplay.setDisplay(clockPrefix, displayTime.getTimeText());
@@ -466,8 +468,10 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         } else if (mode == SessionMode.CALORIE_BURN) {
             targetLabel.setText(String.format("%.0f kcal", session.targetCalories));
         } else if (mode == SessionMode.INTERVAL) {
-            targetLabel.setText(String.format("%d / %d min",
-                    session.intervalWalkSeconds / 60, session.intervalBreakSeconds / 60));
+            targetLabel.setText(hasIntervalBlocks(session)
+                    ? String.format("%d / %d min",
+                    session.intervalWalkSeconds / 60, session.intervalBreakSeconds / 60)
+                    : TreadmillBundle.message("panel.target.open"));
         } else {
             targetLabel.setText(String.format("%.2f %s",
                     currentUnits.weightFromKg(session.targetFatKg), currentUnits.weightUnit()));
@@ -476,7 +480,7 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         String status = engine.isRunning()
                 ? TreadmillBundle.message("status.running")
                 : session.completed ? TreadmillBundle.message("status.complete") : TreadmillBundle.message("status.paused");
-        if (mode == SessionMode.INTERVAL && engine.isRunning()) {
+        if (mode == SessionMode.INTERVAL && hasIntervalBlocks(session) && engine.isRunning()) {
             status += session.intervalWalking
                     ? " - " + TreadmillBundle.message("status.interval.walk")
                     : " - " + TreadmillBundle.message("status.interval.break");
@@ -787,6 +791,10 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         if (!populatingFields && engine.getSession() == null) {
             updateDisplay();
         }
+    }
+
+    private static boolean hasIntervalBlocks(SessionData session) {
+        return session.intervalWalkSeconds > 0 && session.intervalBreakSeconds > 0;
     }
 
     /** Multi-speed sessions get a per-speed breakdown tooltip on the distance tile. */
