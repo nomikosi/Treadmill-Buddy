@@ -44,7 +44,9 @@ limitations under the License.
                     <li>Walking streak is now computed over the full history and supports 0-2 configurable rest days per week; a "streak at risk" hint appears in the evening.</li>
                     <li>Six-month activity heatmap (GitHub-style) in the tool window.</li>
                     <li>Personal records (longest session, best day distance/steps) with a notification when you break one.</li>
-                    <li>CSV import, JSON export, and per-session TCX export for Garmin Connect / Strava.</li>
+                    <li>CSV and JSON import, JSON export, and per-session TCX export (with per-minute trackpoints) for Garmin Connect / Strava; JSON round-trips the full model for backup/restore.</li>
+                    <li>The floating clock and big clock show the current interval block ("Walk" / "Break"), and break blocks are exempt from the inactivity auto-pause.</li>
+                    <li>Session history refreshes when the IDE regains focus, so walks saved in another JetBrains IDE appear immediately; the saved-sessions list shows the 25 most recent with a Show All toggle.</li>
                     <li>Daily-goal progress glyph in the status bar widget.</li>
                     <li>New "Keep Running While Idle" toggle (status bar popup / Tools menu) for reading-heavy walking.</li>
                     <li>Session history now lives in <code>~/.treadmill-buddy/sessions.json</code>, shared across all JetBrains IDEs and safe across IDE reinstalls; existing history migrates automatically.</li>
@@ -100,6 +102,11 @@ limitations under the License.
     <depends>com.intellij.modules.platform</depends>
 
     <resource-bundle>messages.TreadmillBundle</resource-bundle>
+
+    <applicationListeners>
+        <listener class="com.codex.desktreadmill.startup.TreadmillActivationListener"
+                  topic="com.intellij.openapi.application.ApplicationActivationListener"/>
+    </applicationListeners>
 
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow

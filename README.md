@@ -15,7 +15,7 @@ Treadmill Buddy is a JetBrains IDE plugin for developers who use an under-desk t
 - Tracks elapsed time, countdown time, distance, steps, calories, incline, and targets.
 - Shows today / last-7-days / all-time totals, a 14-day distance chart, a six-month activity heatmap, and your walking-day streak (with 0-2 configurable rest days per week and an evening "streak at risk" hint).
 - Stores session history in `~/.treadmill-buddy/sessions.json`, shared across all JetBrains IDEs and safe across IDE reinstalls.
-- Exports session history to CSV or JSON, imports CSV back, and exports single sessions as TCX workouts for Garmin Connect, Strava, and similar services.
+- Exports session history to CSV or JSON, imports both back (JSON restores the full model including speed segments), and exports single sessions as TCX workouts with per-minute trackpoints for Garmin Connect, Strava, and similar services.
 - Supports optional daily and weekly goals (steps, distance, or calories) with progress bars, a status bar progress glyph, and a congratulation notification when you hit them.
 - Lets you save named speed presets and switch between them with one click; multi-speed sessions get a per-speed breakdown tooltip.
 - Tracks personal records (longest session, best day distance and steps) and notifies you when you break one.
@@ -84,7 +84,7 @@ You can edit everything later from `Settings | Tools | Treadmill Buddy`; switchi
 - Keyboard and mouse activity keep the session alive; after the idle timeout it auto-pauses, and typing resumes it.
 - If the machine goes to sleep, the session auto-pauses instead of crediting the slept time.
 - Session completion shows a notification (no modal dialog interrupting your typing).
-- Saved sessions appear in a list with duration, distance, calories, and date; double-click or press Enter to load one, use the toolbar to delete, import CSV, or export sessions as CSV, JSON, or TCX.
+- Saved sessions appear in a list with duration, distance, calories, and date; double-click or press Enter to load one, use the toolbar to delete, import CSV/JSON, or export sessions as CSV, JSON, or TCX. The list shows the 25 most recent sessions with a Show All toggle, and refreshes when the IDE regains focus so walks saved in another JetBrains IDE appear immediately.
 - The CSV export always uses metric columns (`speed_kmh`, `distance_km`), regardless of the display units, so exported data stays comparable, and re-importing skips sessions you already have.
 
 ## Build and Development

@@ -94,6 +94,31 @@ class SessionStoreTest {
     }
 
     @Test
+    void reloadPicksUpSessionsWrittenByAnotherStore() {
+        Path file = tempDir.resolve("sessions.json");
+        SessionStore first = new SessionStore(file);
+        first.saveSession(session("a", "Mine"));
+
+        SessionStore second = new SessionStore(file);
+        second.getSessions();
+        first.saveSession(session("b", "Written elsewhere"));
+
+        assertNull(second.findSession("b"));
+        second.reload();
+        assertNotNull(second.findSession("b"));
+    }
+
+    @Test
+    void reloadDoesNotResurrectLocallyDeletedSessions() {
+        Path file = tempDir.resolve("sessions.json");
+        SessionStore store = new SessionStore(file);
+        store.saveSession(session("a", "Doomed"));
+        store.deleteSession("a");
+        store.reload();
+        assertNull(store.findSession("a"));
+    }
+
+    @Test
     void corruptFileIsToleratedAndOverwritten() throws IOException {
         Path file = tempDir.resolve("sessions.json");
         Files.writeString(file, "this is not json{{{");

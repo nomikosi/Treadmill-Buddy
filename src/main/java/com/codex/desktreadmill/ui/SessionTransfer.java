@@ -5,8 +5,12 @@ import com.codex.desktreadmill.TreadmillNotifications;
 import com.codex.desktreadmill.calories.CalorieAlgorithm;
 import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.SessionMode;
+import com.codex.desktreadmill.model.SpeedSegment;
 import com.codex.desktreadmill.settings.TreadmillSettings;
+import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonSyntaxException;
+import com.google.gson.reflect.TypeToken;
 import com.intellij.openapi.fileChooser.FileChooser;
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory;
 import com.intellij.openapi.fileChooser.FileChooserFactory;
@@ -18,6 +22,7 @@ import com.intellij.openapi.vfs.VirtualFileWrapper;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
+import java.lang.reflect.Type;
 import java.nio.file.Files;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -112,6 +117,8 @@ public final class SessionTransfer {
                         <Calories>%d</Calories>
                         <Intensity>Active</Intensity>
                         <TriggerMethod>Manual</TriggerMethod>
+                        <Track>
+                %s        </Track>
                       </Lap>
                       <Notes>%s</Notes>
                     </Activity>
@@ -122,8 +129,61 @@ public final class SessionTransfer {
                 session.elapsedSeconds,
                 session.distanceKm * 1000.0,
                 Math.max(0, Math.round(session.calories)),
+                buildTrackpoints(session, start),
                 xmlEscape(session.name));
         writeFile(project, wrapper, tcx, 1);
+    }
+
+    /**
+     * One trackpoint per minute plus the final second. Some services (notably
+     * Strava) reject TCX laps without a track. Distances follow the recorded
+     * speed segments when present, scaled so the last point lands exactly on
+     * the session total; sessions without segments interpolate linearly.
+     */
+    private static String buildTrackpoints(SessionData session, Instant start) {
+        StringBuilder track = new StringBuilder();
+        long elapsed = session.elapsedSeconds;
+        double totalMeters = session.distanceKm * 1000.0;
+        double segmentTotalMeters = 0.0;
+        long segmentTotalSeconds = 0L;
+        for (SpeedSegment segment : session.segments) {
+            segmentTotalMeters += segment.speedKmh / 3.6 * segment.seconds;
+            segmentTotalSeconds += segment.seconds;
+        }
+        boolean useSegments = segmentTotalMeters > 0 && segmentTotalSeconds > 0;
+        double scale = useSegments ? totalMeters / segmentTotalMeters : 1.0;
+        for (long t = 0; ; t += 60) {
+            boolean last = t >= elapsed;
+            long at = last ? elapsed : t;
+            double meters;
+            if (last) {
+                meters = totalMeters;
+            } else if (useSegments) {
+                meters = distanceFromSegments(session, at) * scale;
+            } else {
+                meters = elapsed > 0 ? totalMeters * at / elapsed : 0.0;
+            }
+            track.append(String.format(
+                    "          <Trackpoint><Time>%s</Time><DistanceMeters>%.1f</DistanceMeters></Trackpoint>%n",
+                    start.plusSeconds(at), meters));
+            if (last) {
+                return track.toString();
+            }
+        }
+    }
+
+    private static double distanceFromSegments(SessionData session, long atSeconds) {
+        double meters = 0.0;
+        long consumed = 0L;
+        for (SpeedSegment segment : session.segments) {
+            long inSegment = Math.min(segment.seconds, atSeconds - consumed);
+            if (inSegment <= 0) {
+                break;
+            }
+            meters += segment.speedKmh / 3.6 * inSegment;
+            consumed += inSegment;
+        }
+        return meters;
     }
 
     /** Returns the number of imported sessions, or -1 when the dialog was cancelled. */
@@ -168,6 +228,58 @@ public final class SessionTransfer {
                 TreadmillBundle.message("notification.title"),
                 TreadmillBundle.message("notification.import.done", imported));
         return imported;
+    }
+
+    /**
+     * Imports sessions from a JSON export. Unlike CSV, this round-trips the
+     * full model (speed segments, interval config), so it's the backup/restore
+     * path. Returns the number of imported sessions, or -1 when cancelled.
+     */
+    public static int importJson(@Nullable Project project, TreadmillSettings settings) {
+        VirtualFile file = FileChooser.chooseFile(
+                FileChooserDescriptorFactory.createSingleFileDescriptor("json")
+                        .withTitle("Import Treadmill Sessions")
+                        .withDescription("Pick a JSON file previously exported by Treadmill Buddy"),
+                project, null);
+        if (file == null) {
+            return -1;
+        }
+        List<SessionData> imported;
+        try {
+            Type listType = new TypeToken<List<SessionData>>() {
+            }.getType();
+            imported = new Gson().fromJson(Files.readString(file.toNioPath()), listType);
+        } catch (IOException | JsonSyntaxException exception) {
+            Messages.showErrorDialog(project, "Could not read JSON file: " + exception.getMessage(), "Import Sessions");
+            return -1;
+        }
+        if (imported == null) {
+            imported = List.of();
+        }
+        Set<String> existingIds = new HashSet<>();
+        Set<String> existingKeys = new HashSet<>();
+        for (SessionData session : settings.getSessions()) {
+            existingIds.add(session.id);
+            existingKeys.add(dedupeKey(session));
+        }
+        int count = 0;
+        for (SessionData session : imported) {
+            if (session == null || session.id == null || session.id.isBlank()
+                    || existingIds.contains(session.id) || existingKeys.contains(dedupeKey(session))) {
+                continue;
+            }
+            if (session.segments == null) {
+                session.segments = new java.util.ArrayList<>();
+            }
+            existingIds.add(session.id);
+            existingKeys.add(dedupeKey(session));
+            settings.saveSession(session);
+            count++;
+        }
+        TreadmillNotifications.info(project,
+                TreadmillBundle.message("notification.title"),
+                TreadmillBundle.message("notification.import.done", count));
+        return count;
     }
 
     private static String dedupeKey(SessionData session) {

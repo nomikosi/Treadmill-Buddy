@@ -166,6 +166,54 @@ class WorkoutEngineTest {
     }
 
     @Test
+    void intervalBreakBlockIsExemptFromIdlePause() {
+        settings.setAutoPauseMinutes(1);
+        SessionData session = marathonSession();
+        session.modeId = SessionMode.INTERVAL.name();
+        session.intervalWalkSeconds = 30L;
+        session.intervalBreakSeconds = 120L;
+        engine.startSession(session);
+
+        // Walk block finishes within the idle window.
+        nowMillis += 30_000;
+        engine.tick();
+        assertFalse(engine.getSession().intervalWalking);
+
+        // Two idle minutes into the break: no typing is expected here, so the
+        // break countdown must keep running instead of auto-pausing.
+        nowMillis += 50_000;
+        engine.tick();
+        nowMillis += 50_000;
+        engine.tick();
+        nowMillis += 20_000;
+        engine.tick();
+        assertTrue(engine.isRunning());
+        assertTrue(engine.getSession().intervalWalking);
+    }
+
+    @Test
+    void firstRecordsCheckSeedsBaselinesFromHistory() {
+        SessionData historic = marathonSession();
+        historic.id = "old";
+        historic.elapsedSeconds = 7_200L;
+        historic.distanceKm = 8.0;
+        historic.steps = 11_000L;
+        historic.createdMillis = nowMillis;
+        settings.saveSession(historic);
+
+        engine.startSession(marathonSession());
+        nowMillis += 10_000;
+        engine.tick();
+        engine.pause();
+
+        // The pause triggered the first records check: it must adopt the
+        // historical bests, not crown today's short walk as a record.
+        assertTrue(settings.isRecordsSeeded());
+        assertEquals(7_200L, settings.getBestSessionSeconds());
+        assertEquals(8.0, settings.getBestDayDistanceKm(), 0.5);
+    }
+
+    @Test
     void keepRunningWhenIdleSuppressesIdlePause() {
         settings.setAutoPauseMinutes(1);
         engine.setKeepRunningWhenIdle(true);

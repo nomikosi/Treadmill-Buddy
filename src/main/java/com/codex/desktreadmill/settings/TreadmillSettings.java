@@ -258,6 +258,20 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
         state.bestDaySteps = steps;
     }
 
+    /** True once stored record baselines were seeded from the full history. */
+    public boolean isRecordsSeeded() {
+        return state.recordsSeeded;
+    }
+
+    public void setRecordsSeeded(boolean seeded) {
+        state.recordsSeeded = seeded;
+    }
+
+    /** Picks up sessions another IDE instance wrote since our last read. */
+    public void reloadSessions() {
+        sessionStore.reload();
+    }
+
     public boolean hasFloatingClockLocation() {
         return state.floatingClockX != Integer.MIN_VALUE && state.floatingClockY != Integer.MIN_VALUE;
     }
@@ -306,5 +320,6 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
         public long bestSessionSeconds = 0L;
         public double bestDayDistanceKm = 0.0;
         public long bestDaySteps = 0L;
+        public boolean recordsSeeded = false;
     }
 }

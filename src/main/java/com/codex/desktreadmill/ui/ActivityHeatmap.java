@@ -2,6 +2,7 @@ package com.codex.desktreadmill.ui;
 
 import com.intellij.ui.JBColor;
 import com.intellij.util.ui.JBUI;
+import com.intellij.util.ui.UIUtil;
 
 import javax.swing.JComponent;
 import java.awt.Color;
@@ -12,6 +13,8 @@ import java.awt.RenderingHints;
 import java.awt.event.MouseEvent;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
+import java.time.format.TextStyle;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -40,9 +43,13 @@ public final class ActivityHeatmap extends JComponent {
         // Tooltips are computed per cell in getToolTipText; registering any
         // text just turns tooltip support on.
         setToolTipText("");
-        int height = JBUI.scale(7 * 9 + 2);
+        int height = JBUI.scale(7 * 9 + 2) + labelHeight();
         setPreferredSize(new Dimension(JBUI.scale(WEEKS * 9), height));
         setMaximumSize(new Dimension(Integer.MAX_VALUE, height));
+    }
+
+    private static int labelHeight() {
+        return JBUI.scale(12);
     }
 
     public void setData(Map<Long, Double> kmByDay, LocalDate today, String distanceUnit, double unitFactor) {
@@ -80,6 +87,25 @@ public final class ActivityHeatmap extends JComponent {
         int cell = cellSize();
         int box = cell - JBUI.scale(1);
         int startX = gridX();
+        int gridY = labelHeight();
+
+        // Month initials above the first column whose Monday enters a new month.
+        g.setFont(JBUI.Fonts.miniFont());
+        g.setColor(UIUtil.getContextHelpForeground());
+        int previousMonth = -1;
+        for (int week = 0; week < WEEKS; week++) {
+            LocalDate monday = firstMonday().plusWeeks(week);
+            if (monday.getMonthValue() != previousMonth) {
+                // Skip a label crammed into the very first column mid-month;
+                // it would sit flush against the next month's label.
+                if (previousMonth != -1 || monday.getDayOfMonth() <= 7) {
+                    g.drawString(monday.getMonth().getDisplayName(TextStyle.SHORT, Locale.getDefault()),
+                            startX + week * cell, gridY - JBUI.scale(2));
+                }
+                previousMonth = monday.getMonthValue();
+            }
+        }
+
         LocalDate date = firstMonday();
         for (int week = 0; week < WEEKS; week++) {
             for (int day = 0; day < 7; day++, date = date.plusDays(1)) {
@@ -88,7 +114,7 @@ public final class ActivityHeatmap extends JComponent {
                 }
                 double km = kmByDay.getOrDefault(date.toEpochDay(), 0.0);
                 g.setColor(colorFor(km));
-                g.fillRoundRect(startX + week * cell, day * cell, box, box, 2, 2);
+                g.fillRoundRect(startX + week * cell, gridY + day * cell, box, box, 2, 2);
             }
         }
         g.dispose();
@@ -106,7 +132,7 @@ public final class ActivityHeatmap extends JComponent {
     public String getToolTipText(MouseEvent event) {
         int cell = cellSize();
         int week = (event.getX() - gridX()) / cell;
-        int day = event.getY() / cell;
+        int day = (event.getY() - labelHeight()) / cell;
         if (week < 0 || week >= WEEKS || day < 0 || day >= 7) {
             return null;
         }

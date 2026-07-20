@@ -79,6 +79,22 @@ public final class SessionStore {
         write();
     }
 
+    /**
+     * Merges sessions another IDE instance wrote since our last read. In-memory
+     * sessions win on id conflicts (ours may include an in-flight workout);
+     * ids deleted here stay deleted.
+     */
+    public synchronized void reload() {
+        if (!loaded) {
+            return; // Nothing cached; the next access reads the file fresh anyway.
+        }
+        for (SessionData onDisk : readFile()) {
+            if (indexOf(onDisk.id) < 0 && !deletedIds.contains(onDisk.id)) {
+                sessions.add(onDisk);
+            }
+        }
+    }
+
     /** Adds sessions from the legacy per-IDE storage that the file doesn't know yet. */
     public synchronized void migrate(List<SessionData> legacySessions) {
         ensureLoaded();

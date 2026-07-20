@@ -114,8 +114,12 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
     private final JPanel targetPanel = new JPanel(targetCards);
     private final FloatingClockWindow floatingClock;
 
+    /** Durable cross-IDE history can grow into the hundreds; keep the list scannable. */
+    private static final int RECENT_SESSIONS_LIMIT = 25;
+
     private boolean populatingFields;
     private boolean highSpeedWarningShown;
+    private boolean showAllSessions;
     private UnitSystem currentUnits;
 
     public TreadmillPanel(Project project) {
@@ -405,6 +409,15 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
                         }
                     }
                 })
+                .addExtraAction(new DumbAwareAction("Import JSON", "Import sessions from a JSON file exported by Treadmill Buddy (full backup restore)", AllIcons.Actions.Download) {
+                    @Override
+                    public void actionPerformed(@NotNull AnActionEvent event) {
+                        if (SessionTransfer.importJson(project, settings) > 0) {
+                            engine.notifySessionsChanged();
+                        }
+                    }
+                })
+                .addExtraAction(new ShowAllSessionsAction())
                 .createPanel();
     }
 
@@ -553,8 +566,14 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
             seconds = previewSecondsFromInputs();
         }
         TimeFormatter.DisplayTime displayTime = TimeFormatter.displayTime(seconds);
-        clockDisplay.setDisplay(displayTime.getDayPrefix(), displayTime.getTimeText());
-        floatingClock.setDisplay(displayTime.getDayPrefix(), displayTime.getTimeText());
+        String clockPrefix = displayTime.getDayPrefix();
+        // Interval blocks are always well under a day, so the day-prefix slot
+        // is free to show which block the clock is counting down.
+        if (session != null && SessionMode.fromId(session.modeId) == SessionMode.INTERVAL) {
+            clockPrefix = session.intervalWalking ? "Walk" : "Break";
+        }
+        clockDisplay.setDisplay(clockPrefix, displayTime.getTimeText());
+        floatingClock.setDisplay(clockPrefix, displayTime.getTimeText());
 
         if (session == null) {
             distanceLabel.setText("0.00 " + currentUnits.distanceUnit());
@@ -660,16 +679,52 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         String selectedId = selected == null ? null : selected.id;
         List<SessionData> sessions = settings.getSessions();
         sessions.sort(Comparator.comparingLong((SessionData s) -> s.createdMillis).reversed());
-        sessionsModel.replaceAll(sessions);
+        List<SessionData> shown = showAllSessions || sessions.size() <= RECENT_SESSIONS_LIMIT
+                ? sessions
+                : sessions.subList(0, RECENT_SESSIONS_LIMIT);
+        sessionsModel.replaceAll(shown);
+        sessionsList.getEmptyText().setText("No saved sessions");
+        if (shown.size() < sessions.size()) {
+            sessionsList.setToolTipText(String.format(
+                    "Showing the %d most recent of %d sessions - use the eye toolbar button to show all. Double-click or press Enter to load a session.",
+                    shown.size(), sessions.size()));
+        } else {
+            sessionsList.setToolTipText("Double-click or press Enter to load a session");
+        }
         if (selectedId != null) {
-            for (int i = 0; i < sessions.size(); i++) {
-                if (selectedId.equals(sessions.get(i).id)) {
+            for (int i = 0; i < shown.size(); i++) {
+                if (selectedId.equals(shown.get(i).id)) {
                     sessionsList.setSelectedIndex(i);
                     break;
                 }
             }
         }
+        // Stats always cover the full history, not just the visible slice.
         updateStatsLabel(sessions);
+    }
+
+    private final class ShowAllSessionsAction extends com.intellij.openapi.actionSystem.ToggleAction implements com.intellij.openapi.project.DumbAware {
+        ShowAllSessionsAction() {
+            super("Show All Sessions",
+                    "Show the full session history instead of the " + RECENT_SESSIONS_LIMIT + " most recent",
+                    AllIcons.Actions.Show);
+        }
+
+        @Override
+        public boolean isSelected(@NotNull AnActionEvent event) {
+            return showAllSessions;
+        }
+
+        @Override
+        public void setSelected(@NotNull AnActionEvent event, boolean selected) {
+            showAllSessions = selected;
+            refreshSavedSessions();
+        }
+
+        @Override
+        public @NotNull com.intellij.openapi.actionSystem.ActionUpdateThread getActionUpdateThread() {
+            return com.intellij.openapi.actionSystem.ActionUpdateThread.EDT;
+        }
     }
 
     private void updateStatsLabel(List<SessionData> sessions) {
@@ -738,7 +793,9 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         long startOfCalendarWeek = todayDate.with(java.time.DayOfWeek.MONDAY)
                 .atStartOfDay(zone).toInstant().toEpochMilli();
         SessionStats.Totals thisWeek = SessionStats.totalsSince(sessions, startOfCalendarWeek);
-        applyGoalProgress(weeklyGoalProgressBar, "Weekly goal", weeklyType, settings.getWeeklyGoalValue(), thisWeek);
+        // "(Mon-Sun)" because the stats line's "7 days" is a rolling window;
+        // labeling the difference beats leaving readers to guess.
+        applyGoalProgress(weeklyGoalProgressBar, "Weekly goal (Mon-Sun)", weeklyType, settings.getWeeklyGoalValue(), thisWeek);
     }
 
     private void applyGoalProgress(JProgressBar bar, String label, GoalType goalType, double target, SessionStats.Totals totals) {

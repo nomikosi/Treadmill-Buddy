@@ -445,6 +445,14 @@ public final class WorkoutEngine implements Disposable {
         if (keepRunningWhenIdle) {
             return false;
         }
+        // During an interval break the user has stepped off and stopped typing
+        // - exactly what idle detection looks for. Pausing would freeze the
+        // break countdown and never chime them back to walking.
+        if (session != null
+                && SessionMode.fromId(session.modeId) == SessionMode.INTERVAL
+                && !session.intervalWalking) {
+            return false;
+        }
         int idleMinutes = settings.getAutoPauseMinutes();
         if (idleMinutes == 0) {
             return false;
@@ -560,6 +568,16 @@ public final class WorkoutEngine implements Disposable {
             return;
         }
         ZoneId zone = ZoneId.systemDefault();
+        // Users updating with existing history would otherwise start from zero
+        // baselines and get a false "record" on their first mediocre day.
+        if (!settings.isRecordsSeeded()) {
+            SessionStats.Records historical = SessionStats.records(settings.getSessions(), zone);
+            settings.setBestSessionSeconds(Math.max(settings.getBestSessionSeconds(), historical.longestSessionSeconds));
+            settings.setBestDayDistanceKm(Math.max(settings.getBestDayDistanceKm(), historical.bestDayDistanceKm));
+            settings.setBestDaySteps(Math.max(settings.getBestDaySteps(), historical.bestDaySteps));
+            settings.setRecordsSeeded(true);
+            return;
+        }
         LocalDate today = Instant.ofEpochMilli(clock.getAsLong()).atZone(zone).toLocalDate();
         long startOfToday = today.atStartOfDay(zone).toInstant().toEpochMilli();
         SessionStats.Totals todayTotals = SessionStats.totalsSince(settings.getSessions(), startOfToday);
