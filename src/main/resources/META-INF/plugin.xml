@@ -41,7 +41,7 @@ limitations under the License.
                     <li>Speed presets: save named treadmill speeds and switch with one click from the new Presets button.</li>
                     <li>Per-speed session breakdown: hover the Distance tile to see how long you walked at each speed.</li>
                     <li>Optional weekly goal (steps, distance, or calories) with its own progress bar, next to the daily goal.</li>
-                    <li>Walking streak is now computed over the full history and supports 0-2 configurable rest days per week; a "streak at risk" hint appears in the evening.</li>
+                    <li>Walking streak is now computed over the full history and supports 0-6 configurable rest days per week; a "streak at risk" hint appears in the evening.</li>
                     <li>Six-month activity heatmap (GitHub-style) in the tool window.</li>
                     <li>Personal records (longest session, best day distance/steps) with a notification when you break one.</li>
                     <li>CSV and JSON import, JSON export, and per-session TCX export (with per-minute trackpoints) for Garmin Connect / Strava; JSON round-trips the full model for backup/restore.</li>
