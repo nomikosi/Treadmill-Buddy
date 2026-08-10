@@ -7,9 +7,6 @@ import com.codex.desktreadmill.model.GoalType;
 import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.SessionMode;
 import com.codex.desktreadmill.settings.TreadmillSettings;
-import com.intellij.notification.NotificationAction;
-import com.intellij.notification.NotificationGroupManager;
-import com.intellij.notification.NotificationType;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.Service;
@@ -76,11 +73,6 @@ public final class WorkoutEngine implements Disposable {
     private boolean autoPaused;
     private boolean keepRunningWhenIdle;
     private String statusNote = "";
-    /** Session ids already congratulated per record type, so a session that
-        pauses repeatedly doesn't re-fire the same "new record" balloon. */
-    private String sessionRecordCelebratedId = "";
-    private String dayDistanceRecordCelebratedId = "";
-    private String dayStepsRecordCelebratedId = "";
     private long lastTickMillis;
     private long carryMillis;
     private long lastActivityMillis;
@@ -226,6 +218,14 @@ public final class WorkoutEngine implements Disposable {
         session.steps = 0L;
         session.calories = 0.0;
         session.completed = false;
+        session.segments.clear();
+        session.intervalWalking = true;
+        session.intervalPhaseSeconds = 0L;
+        // Reset restarts the walk under the same id, so let it earn the
+        // longest-session record again instead of staying suppressed forever.
+        if (session.id.equals(settings.getLastSessionRecordId())) {
+            settings.setLastSessionRecordId("");
+        }
         WorkoutMath.recalcRemaining(session, settings.getProfile());
         persist();
         notifyStateChanged();
@@ -377,7 +377,9 @@ public final class WorkoutEngine implements Disposable {
         Toolkit.getDefaultToolkit().beep();
         boolean walking = session.intervalWalking;
         long minutes = (walking ? session.intervalWalkSeconds : session.intervalBreakSeconds) / 60L;
-        TreadmillNotifications.info(
+        // Transient: a block chime is stale the moment the block ends, and a
+        // three-hour interval walk would otherwise pile up a dozen dead rows.
+        TreadmillNotifications.transientInfo(
                 TreadmillBundle.message(walking ? "notification.interval.walk.title" : "notification.interval.break.title"),
                 TreadmillBundle.message(walking ? "notification.interval.walk.content" : "notification.interval.break.content", minutes)
         );
@@ -420,16 +422,14 @@ public final class WorkoutEngine implements Disposable {
             return;
         }
         lastReminderMillis = now;
-        NotificationGroupManager.getInstance()
-                .getNotificationGroup(TreadmillNotifications.GROUP_ID)
-                .createNotification(
-                        TreadmillBundle.message("notification.move.title"),
-                        TreadmillBundle.message("notification.move.content", reminderMinutes),
-                        NotificationType.INFORMATION
-                )
-                .addAction(NotificationAction.createSimpleExpiring(
-                        TreadmillBundle.message("notification.move.action"), WorkoutEngine::openToolWindow))
-                .notify(null);
+        // Goes through TreadmillNotifications so it picks up the shared
+        // auto-close behaviour instead of being the one balloon that lingers.
+        TreadmillNotifications.withAction(
+                null,
+                TreadmillBundle.message("notification.move.title"),
+                TreadmillBundle.message("notification.move.content", reminderMinutes),
+                TreadmillBundle.message("notification.move.action"),
+                WorkoutEngine::openToolWindow);
     }
 
     private static void openToolWindow() {
@@ -563,71 +563,112 @@ public final class WorkoutEngine implements Disposable {
     }
 
     /**
-     * Called when a session pauses or completes: checks whether the finished
-     * stretch set a new personal record and celebrates at most once per record
-     * type. Bests are stored even before any notification is possible, so the
-     * very first session quietly seeds the baseline instead of "breaking" it.
+     * Called when a session pauses or completes. A record only counts when the
+     * current session beats every <em>other</em> session, and today beats every
+     * other day: measuring against a best that already includes the current
+     * walk would let a session break its own earlier state, which on a fresh
+     * install means congratulating the very first walk for beating itself.
+     *
+     * <p>Each record is announced once, guarded by persisted state keyed the
+     * way the record is measured - by session id for the longest session, by
+     * day for the day totals - so neither a mid-walk pause, a second session
+     * the same afternoon, nor an IDE restart re-fires it.</p>
      */
     private void maybeCelebrateRecords() {
         if (session == null || session.elapsedSeconds == 0) {
             return;
         }
         ZoneId zone = ZoneId.systemDefault();
-        // Users updating with existing history would otherwise start from zero
-        // baselines and get a false "record" on their first mediocre day.
-        if (!settings.isRecordsSeeded()) {
-            SessionStats.Records historical = SessionStats.records(settings.getSessions(), zone);
-            settings.setBestSessionSeconds(Math.max(settings.getBestSessionSeconds(), historical.longestSessionSeconds));
-            settings.setBestDayDistanceKm(Math.max(settings.getBestDayDistanceKm(), historical.bestDayDistanceKm));
-            settings.setBestDaySteps(Math.max(settings.getBestDaySteps(), historical.bestDaySteps));
-            settings.setRecordsSeeded(true);
-            return;
-        }
         LocalDate today = Instant.ofEpochMilli(clock.getAsLong()).atZone(zone).toLocalDate();
-        long startOfToday = today.atStartOfDay(zone).toInstant().toEpochMilli();
-        SessionStats.Totals todayTotals = SessionStats.totalsSince(settings.getSessions(), startOfToday);
+        long epochDay = today.toEpochDay();
+        BrokenRecords broken = brokenRecords(
+                settings.getSessions(), session, today, zone,
+                settings.getLastSessionRecordId(),
+                settings.getLastDistanceRecordDay(),
+                settings.getLastStepsRecordDay());
 
-        // Each record notifies at most once per session id: the stored best is
-        // updated whenever this session grows past it, but the balloon fires
-        // only the first time - not on every subsequent pause of the same walk.
-        long bestSession = settings.getBestSessionSeconds();
-        if (session.elapsedSeconds > bestSession) {
-            settings.setBestSessionSeconds(session.elapsedSeconds);
-            if (interactive && bestSession > 0 && !session.id.equals(sessionRecordCelebratedId)) {
-                sessionRecordCelebratedId = session.id;
-                TreadmillNotifications.info(
-                        TreadmillBundle.message("notification.record.title"),
-                        TreadmillBundle.message("notification.record.session",
-                                formatMinutes(session.elapsedSeconds), formatMinutes(bestSession)));
-            }
+        if (broken.longestSession) {
+            settings.setLastSessionRecordId(session.id);
+            announceRecord(TreadmillBundle.message("notification.record.session",
+                    formatDuration(session.elapsedSeconds), formatDuration(broken.previousLongestSeconds)));
         }
-        double bestDayKm = settings.getBestDayDistanceKm();
-        if (todayTotals.distanceKm > bestDayKm) {
-            settings.setBestDayDistanceKm(todayTotals.distanceKm);
-            if (interactive && bestDayKm > 0 && !session.id.equals(dayDistanceRecordCelebratedId)) {
-                dayDistanceRecordCelebratedId = session.id;
-                TreadmillNotifications.info(
-                        TreadmillBundle.message("notification.record.title"),
-                        TreadmillBundle.message("notification.record.distance",
-                                String.format("%.2f", settings.getUnitSystem().distanceFromKm(todayTotals.distanceKm)),
-                                settings.getUnitSystem().distanceUnit()));
-            }
+        if (broken.dayDistance) {
+            settings.setLastDistanceRecordDay(epochDay);
+            announceRecord(TreadmillBundle.message("notification.record.distance",
+                    String.format("%.2f", settings.getUnitSystem().distanceFromKm(broken.todayDistanceKm)),
+                    settings.getUnitSystem().distanceUnit()));
         }
-        long bestDaySteps = settings.getBestDaySteps();
-        if (todayTotals.steps > bestDaySteps) {
-            settings.setBestDaySteps(todayTotals.steps);
-            if (interactive && bestDaySteps > 0 && !session.id.equals(dayStepsRecordCelebratedId)) {
-                dayStepsRecordCelebratedId = session.id;
-                TreadmillNotifications.info(
-                        TreadmillBundle.message("notification.record.title"),
-                        TreadmillBundle.message("notification.record.steps",
-                                String.format("%,d", todayTotals.steps)));
-            }
+        if (broken.daySteps) {
+            settings.setLastStepsRecordDay(epochDay);
+            announceRecord(TreadmillBundle.message("notification.record.steps",
+                    String.format("%,d", broken.todaySteps)));
         }
     }
 
-    private static String formatMinutes(long seconds) {
-        return String.format("%d:%02d", seconds / 3600, seconds % 3600 / 60);
+    /** Which records a pause or completion broke, and the numbers to announce. */
+    static final class BrokenRecords {
+        boolean longestSession;
+        boolean dayDistance;
+        boolean daySteps;
+        long previousLongestSeconds;
+        double todayDistanceKm;
+        long todaySteps;
+    }
+
+    /**
+     * Pure record decision, split out from the announcement so it can be tested
+     * without an IDE. {@code history} is expected to already contain
+     * {@code session} (the engine persists before checking); the current
+     * session and today are excluded from their own baselines.
+     */
+    static BrokenRecords brokenRecords(
+            List<SessionData> history,
+            SessionData session,
+            LocalDate today,
+            ZoneId zone,
+            String lastSessionRecordId,
+            long lastDistanceRecordDay,
+            long lastStepsRecordDay
+    ) {
+        BrokenRecords broken = new BrokenRecords();
+        long epochDay = today.toEpochDay();
+        broken.previousLongestSeconds = SessionStats.longestSessionSeconds(history, session.id);
+        broken.longestSession = broken.previousLongestSeconds > 0
+                && session.elapsedSeconds > broken.previousLongestSeconds
+                // A blank id can't be told apart from the "nothing announced
+                // yet" sentinel, so never let it match.
+                && !(!session.id.isEmpty() && session.id.equals(lastSessionRecordId));
+
+        long startOfToday = today.atStartOfDay(zone).toInstant().toEpochMilli();
+        SessionStats.Totals todayTotals = SessionStats.totalsSince(history, startOfToday);
+        SessionStats.DayTotals bestOtherDay = SessionStats.bestDay(history, zone, epochDay);
+        broken.todayDistanceKm = todayTotals.distanceKm;
+        broken.todaySteps = todayTotals.steps;
+        broken.dayDistance = bestOtherDay.distanceKm > 0
+                && todayTotals.distanceKm > bestOtherDay.distanceKm
+                && lastDistanceRecordDay != epochDay;
+        broken.daySteps = bestOtherDay.steps > 0
+                && todayTotals.steps > bestOtherDay.steps
+                && lastStepsRecordDay != epochDay;
+        return broken;
+    }
+
+    /** The guard is consumed either way; only the balloon needs a real IDE. */
+    private void announceRecord(String content) {
+        if (!interactive) {
+            return;
+        }
+        TreadmillNotifications.info(TreadmillBundle.message("notification.record.title"), content);
+    }
+
+    static String formatDuration(long seconds) {
+        long hours = seconds / 3600;
+        long minutes = seconds % 3600 / 60;
+        if (hours > 0) {
+            return String.format("%dh %02dm", hours, minutes);
+        }
+        // Sub-minute walks would otherwise both render as a meaningless "0m".
+        return minutes > 0 ? minutes + "m" : seconds + "s";
     }
 
     private void notifyStateChanged() {

@@ -1,6 +1,7 @@
 package com.codex.desktreadmill.engine;
 
 import com.codex.desktreadmill.model.SessionData;
+import org.jetbrains.annotations.Nullable;
 
 import java.time.DayOfWeek;
 import java.time.Instant;
@@ -159,5 +160,58 @@ public final class SessionStats {
             records.bestDaySteps = Math.max(records.bestDaySteps, entry.getValue());
         }
         return records;
+    }
+
+    /**
+     * Longest session in the history, ignoring one session id. Record detection
+     * passes the running session's id: a session compared against a best that
+     * already includes itself would "break" its own earlier state.
+     */
+    public static long longestSessionSeconds(List<SessionData> sessions, @Nullable String excludeId) {
+        long longest = 0L;
+        for (SessionData session : sessions) {
+            if (excludeId != null && excludeId.equals(session.id)) {
+                continue;
+            }
+            longest = Math.max(longest, session.elapsedSeconds);
+        }
+        return longest;
+    }
+
+    public static final class DayTotals {
+        public double distanceKm;
+        public long steps;
+    }
+
+    /**
+     * Best single-day distance and step totals, ignoring one day. Record
+     * detection passes today, so today is measured against the other days
+     * rather than against a best that already counts today's walking.
+     *
+     * @param excludeEpochDay the day to leave out; pass {@link Long#MIN_VALUE}
+     *                        to consider every day (0 and -1 are real days)
+     */
+    public static DayTotals bestDay(List<SessionData> sessions, ZoneId zone, long excludeEpochDay) {
+        Map<Long, Double> kmByDay = new HashMap<>();
+        Map<Long, Long> stepsByDay = new HashMap<>();
+        for (SessionData session : sessions) {
+            if (session.createdMillis <= 0 || session.elapsedSeconds == 0) {
+                continue;
+            }
+            long epochDay = Instant.ofEpochMilli(session.createdMillis).atZone(zone).toLocalDate().toEpochDay();
+            if (epochDay == excludeEpochDay) {
+                continue;
+            }
+            kmByDay.merge(epochDay, session.distanceKm, Double::sum);
+            stepsByDay.merge(epochDay, session.steps, Long::sum);
+        }
+        DayTotals best = new DayTotals();
+        for (double km : kmByDay.values()) {
+            best.distanceKm = Math.max(best.distanceKm, km);
+        }
+        for (long steps : stepsByDay.values()) {
+            best.steps = Math.max(best.steps, steps);
+        }
+        return best;
     }
 }

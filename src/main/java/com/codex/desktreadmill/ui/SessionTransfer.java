@@ -7,6 +7,7 @@ import com.codex.desktreadmill.engine.WorkoutMath;
 import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.SessionMode;
 import com.codex.desktreadmill.model.SpeedSegment;
+import com.codex.desktreadmill.model.UserProfile;
 import com.codex.desktreadmill.settings.TreadmillSettings;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -32,6 +33,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -61,7 +63,9 @@ public final class SessionTransfer {
     /** Package-visible for round-trip tests. Always metric columns, locale-independent. */
     static String buildCsv(List<SessionData> sessions) {
         StringBuilder csv = new StringBuilder(
-                "name,mode,algorithm,created,speed_kmh,incline_percent,elapsed_seconds,distance_km,steps,calories,target_calories,target_fat_kg,completed,interval_walk_seconds,interval_break_seconds\n");
+                "name,mode,algorithm,created,speed_kmh,incline_percent,elapsed_seconds,distance_km,steps,calories,"
+                        + "target_calories,target_fat_kg,completed,interval_walk_seconds,interval_break_seconds,"
+                        + "interval_walking,interval_phase_seconds,remaining_seconds,target_seconds,id\n");
         for (SessionData session : sessions) {
             csv.append(csvField(session.name)).append(',')
                     .append(SessionMode.fromId(session.modeId).getLabel()).append(',')
@@ -70,17 +74,30 @@ public final class SessionTransfer {
                             ? LocalDateTime.ofInstant(Instant.ofEpochMilli(session.createdMillis), ZoneId.systemDefault())
                             .format(CSV_DATE_FORMAT)
                             : "").append(',')
-                    .append(String.format("%.1f", session.speedKmh)).append(',')
-                    .append(String.format("%.1f", session.inclinePercent)).append(',')
+                    // Locale.ROOT throughout: a decimal-comma locale would emit
+                    // "4,5", which is an extra CSV field and unparseable on import.
+                    .append(String.format(Locale.ROOT, "%.1f", session.speedKmh)).append(',')
+                    .append(String.format(Locale.ROOT, "%.1f", session.inclinePercent)).append(',')
                     .append(session.elapsedSeconds).append(',')
-                    .append(String.format("%.3f", session.distanceKm)).append(',')
+                    .append(String.format(Locale.ROOT, "%.3f", session.distanceKm)).append(',')
                     .append(session.steps).append(',')
-                    .append(String.format("%.1f", session.calories)).append(',')
-                    .append(String.format("%.1f", session.targetCalories)).append(',')
-                    .append(String.format("%.2f", session.targetFatKg)).append(',')
+                    .append(String.format(Locale.ROOT, "%.1f", session.calories)).append(',')
+                    .append(String.format(Locale.ROOT, "%.1f", session.targetCalories)).append(',')
+                    .append(String.format(Locale.ROOT, "%.2f", session.targetFatKg)).append(',')
                     .append(session.completed).append(',')
                     .append(session.intervalWalkSeconds).append(',')
-                    .append(session.intervalBreakSeconds)
+                    .append(session.intervalBreakSeconds).append(',')
+                    .append(session.intervalWalking).append(',')
+                    .append(session.intervalPhaseSeconds).append(',')
+                    // Countdown state is exported so a re-imported open session
+                    // doesn't need rebuilding from the importing machine's profile.
+                    .append(session.remainingSeconds).append(',')
+                    .append(session.targetSeconds).append(',')
+                    // Exported last so older parsers ignore it. Re-importing
+                    // uses it to recognise sessions you already have; the
+                    // created column only has minute precision, so matching on
+                    // that alone would duplicate the whole history.
+                    .append(csvField(session.id))
                     .append('\n');
         }
         return csv.toString();
@@ -113,7 +130,10 @@ public final class SessionTransfer {
             return;
         }
         Instant start = Instant.ofEpochMilli(session.createdMillis);
-        String tcx = """
+        // String.format with Locale.ROOT, not "...".formatted(...): the latter
+        // uses the default locale, and %d renders Eastern Arabic digits under
+        // ar/fa/bn, which no fitness service will parse as XML numbers.
+        String tcx = String.format(Locale.ROOT, """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
                   <Activities>
@@ -132,7 +152,7 @@ public final class SessionTransfer {
                     </Activity>
                   </Activities>
                 </TrainingCenterDatabase>
-                """.formatted(
+                """,
                 start, start,
                 session.elapsedSeconds,
                 session.distanceKm * 1000.0,
@@ -171,7 +191,7 @@ public final class SessionTransfer {
             } else {
                 meters = elapsed > 0 ? totalMeters * at / elapsed : 0.0;
             }
-            track.append(String.format(
+            track.append(String.format(Locale.ROOT,
                     "          <Trackpoint><Time>%s</Time><DistanceMeters>%.1f</DistanceMeters></Trackpoint>%n",
                     start.plusSeconds(at), meters));
             if (last) {
@@ -214,9 +234,13 @@ public final class SessionTransfer {
         if (lines.isEmpty()) {
             return 0;
         }
-        List<String> header = parseCsvLine(lines.get(0));
+        // "Save as CSV UTF-8" in Excel prefixes a BOM, which would otherwise
+        // make the first column name unrecognisable and drop every name.
+        List<String> header = parseCsvLine(stripBom(lines.get(0)));
+        Set<String> existingIds = new HashSet<>();
         Set<String> existingKeys = new HashSet<>();
         for (SessionData session : settings.getSessions()) {
+            existingIds.add(session.id);
             existingKeys.add(dedupeKey(session));
         }
         int imported = 0;
@@ -225,15 +249,11 @@ public final class SessionTransfer {
                 continue;
             }
             SessionData session = parseCsvSession(header, parseCsvLine(lines.get(i)), i);
-            if (session == null || existingKeys.contains(dedupeKey(session))) {
+            if (session == null || existingIds.contains(session.id) || existingKeys.contains(dedupeKey(session))) {
                 continue;
             }
-            // CSV has no remaining_seconds column; a re-imported, still-open
-            // countdown session would otherwise load with a 00:00:00 clock.
-            // Rebuild the countdown from its target and burned calories.
-            if (!session.completed && SessionMode.fromId(session.modeId).isCountdown()) {
-                WorkoutMath.recalcRemaining(session, settings.getProfile());
-            }
+            rehydrateAfterImport(session, settings.getProfile());
+            existingIds.add(session.id);
             existingKeys.add(dedupeKey(session));
             settings.saveSession(session);
             imported++;
@@ -285,6 +305,11 @@ public final class SessionTransfer {
             if (session.segments == null) {
                 session.segments = new java.util.ArrayList<>();
             }
+            if (session.name == null) {
+                // A hand-edited file can carry a null name, which would later
+                // blow up CSV export for the whole history.
+                session.name = "";
+            }
             existingIds.add(session.id);
             existingKeys.add(dedupeKey(session));
             settings.saveSession(session);
@@ -296,8 +321,37 @@ public final class SessionTransfer {
         return count;
     }
 
+    /**
+     * Rebuilds derived state a CSV written by an older version doesn't carry.
+     * Current exports include the countdown columns, so this only fires for
+     * legacy files; without it an open Calorie/KG-burn row loads with a dead
+     * 00:00:00 clock. It can only use the importing machine's profile, which
+     * is an approximation - and when even that yields no burn rate (profile
+     * never filled in) the clock falls back to counting up, see
+     * {@link WorkoutMath#displaySeconds}.
+     */
+    static void rehydrateAfterImport(SessionData session, UserProfile profile) {
+        if (session.completed || session.remainingSeconds > 0) {
+            return;
+        }
+        if (SessionMode.fromId(session.modeId).isCountdown()) {
+            WorkoutMath.recalcRemaining(session, profile);
+        }
+    }
+
+    private static String stripBom(String line) {
+        return line.startsWith("﻿") ? line.substring(1) : line;
+    }
+
+    /**
+     * Fallback identity for rows from a CSV written before the id column
+     * existed. Truncated to whole minutes because that is all the created
+     * column stores - comparing raw millis would never match the session the
+     * row came from, and re-importing your own export would duplicate
+     * everything.
+     */
     private static String dedupeKey(SessionData session) {
-        return session.createdMillis + "|" + session.name;
+        return (session.createdMillis / 60_000L) + "|" + session.name;
     }
 
     static @Nullable SessionData parseCsvSession(List<String> header, List<String> fields, int rowIndex) {
@@ -324,6 +378,11 @@ public final class SessionTransfer {
                     case "completed" -> session.completed = Boolean.parseBoolean(value);
                     case "interval_walk_seconds" -> session.intervalWalkSeconds = Long.parseLong(value);
                     case "interval_break_seconds" -> session.intervalBreakSeconds = Long.parseLong(value);
+                    case "interval_walking" -> session.intervalWalking = Boolean.parseBoolean(value);
+                    case "interval_phase_seconds" -> session.intervalPhaseSeconds = Long.parseLong(value);
+                    case "remaining_seconds" -> session.remainingSeconds = Long.parseLong(value);
+                    case "target_seconds" -> session.targetSeconds = Long.parseLong(value);
+                    case "id" -> session.id = value.isBlank() ? session.id : value;
                     default -> {
                     }
                 }

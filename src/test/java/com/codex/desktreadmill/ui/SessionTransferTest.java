@@ -4,15 +4,19 @@ import com.codex.desktreadmill.calories.CalorieAlgorithm;
 import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.SessionMode;
 import com.codex.desktreadmill.model.SpeedSegment;
+import com.codex.desktreadmill.model.UserProfile;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -74,6 +78,148 @@ class SessionTransferTest {
         assertEquals(SessionMode.INTERVAL.name(), parsed.modeId);
         assertEquals(1_500L, parsed.intervalWalkSeconds);
         assertEquals(300L, parsed.intervalBreakSeconds);
+    }
+
+    @Test
+    void csvRoundTripPreservesCountdownAndIntervalPhaseState() {
+        SessionData original = sampleSession();
+        original.modeId = SessionMode.INTERVAL.name();
+        original.intervalWalkSeconds = 1_500L;
+        original.intervalBreakSeconds = 300L;
+        original.intervalWalking = false;
+        original.intervalPhaseSeconds = 90L;
+        original.remainingSeconds = 450L;
+        original.targetSeconds = 2_250L;
+        original.completed = false;
+
+        SessionData parsed = roundTrip(original);
+        assertFalse(parsed.intervalWalking, "mid-break state must survive the round trip");
+        assertEquals(90L, parsed.intervalPhaseSeconds);
+        assertEquals(450L, parsed.remainingSeconds);
+        assertEquals(2_250L, parsed.targetSeconds);
+    }
+
+    @Test
+    void rehydrateRebuildsCountdownMissingFromALegacyCsv() {
+        SessionData session = sampleSession();
+        session.modeId = SessionMode.CALORIE_BURN.name();
+        session.completed = false;
+        session.calories = 100.0;
+        session.targetCalories = 300.0;
+        // A CSV from before the countdown columns existed.
+        session.remainingSeconds = 0L;
+
+        UserProfile profile = new UserProfile();
+        profile.weightKg = 70.0;
+        profile.heightCm = 170.0;
+        SessionTransfer.rehydrateAfterImport(session, profile);
+        assertTrue(session.remainingSeconds > 0, "the countdown should be rebuilt from the remaining calories");
+    }
+
+    @Test
+    void rehydrateLeavesCompletedAndAlreadyPopulatedSessionsAlone() {
+        UserProfile profile = new UserProfile();
+        profile.weightKg = 70.0;
+        profile.heightCm = 170.0;
+
+        SessionData completed = sampleSession();
+        completed.modeId = SessionMode.CALORIE_BURN.name();
+        completed.completed = true;
+        completed.remainingSeconds = 0L;
+        SessionTransfer.rehydrateAfterImport(completed, profile);
+        assertEquals(0L, completed.remainingSeconds);
+
+        SessionData intact = sampleSession();
+        intact.modeId = SessionMode.CALORIE_BURN.name();
+        intact.completed = false;
+        intact.remainingSeconds = 777L;
+        SessionTransfer.rehydrateAfterImport(intact, profile);
+        assertEquals(777L, intact.remainingSeconds, "an exported countdown must not be recomputed");
+    }
+
+    @Test
+    void csvSurvivesADecimalCommaLocale() {
+        // On a German IDE, default-locale formatting would write "4,5" for the
+        // speed - an extra CSV field that shifts every later column.
+        Locale original = Locale.getDefault();
+        try {
+            Locale.setDefault(Locale.GERMANY);
+            SessionData parsed = roundTrip(sampleSession());
+            assertEquals(4.5, parsed.speedKmh, 0.05);
+            assertEquals(2.25, parsed.distanceKm, 0.001);
+            assertEquals(3_200L, parsed.steps);
+            assertFalse(SessionTransfer.buildCsv(List.of(sampleSession())).contains("4,5"),
+                    "numbers must be dot-decimal regardless of locale");
+        } finally {
+            Locale.setDefault(original);
+        }
+    }
+
+    @Test
+    void tcxNumbersAreDotDecimalRegardlessOfLocale() {
+        Locale original = Locale.getDefault();
+        try {
+            Locale.setDefault(Locale.GERMANY);
+            SessionData session = sampleSession();
+            session.elapsedSeconds = 120L;
+            session.distanceKm = 0.12;
+            session.segments = new ArrayList<>();
+            String track = SessionTransfer.buildTrackpoints(session, Instant.ofEpochMilli(session.createdMillis));
+            assertTrue(track.contains("<DistanceMeters>60.0</DistanceMeters>"),
+                    "TCX must use XML dot-decimal numbers, got: " + track);
+        } finally {
+            Locale.setDefault(original);
+        }
+    }
+
+    @Test
+    void reimportingOurOwnExportRecognisesTheSameSessions() {
+        // The created column only stores minutes, so a session saved at
+        // 12:00:37 comes back as 12:00:00. Dedupe has to survive that or
+        // re-importing your own export duplicates the entire history.
+        SessionData original = sampleSession();
+        original.createdMillis += 37_000L;
+        SessionData parsed = roundTrip(original);
+
+        assertEquals(original.id, parsed.id, "the id column should round trip so dedupe is exact");
+        assertEquals(original.createdMillis / 60_000L, parsed.createdMillis / 60_000L,
+                "created must match to the minute so the fallback key also matches");
+    }
+
+    @Test
+    void aLegacyCsvWithoutTheNewColumnsStillImports() {
+        // Exactly the header the previous release wrote.
+        String legacy = "name,mode,algorithm,created,speed_kmh,incline_percent,elapsed_seconds,distance_km,steps,"
+                + "calories,target_calories,target_fat_kg,completed\n"
+                + "Old walk,Calorie burn,ACSM treadmill (default),2026-08-10 12:00,4.5,0.0,1800,2.250,3200,"
+                + "150.0,300.0,0.00,false\n";
+        String[] lines = legacy.split("\n");
+        SessionData parsed = SessionTransfer.parseCsvSession(
+                SessionTransfer.parseCsvLine(lines[0]), SessionTransfer.parseCsvLine(lines[1]), 1);
+
+        assertNotNull(parsed);
+        assertEquals("Old walk", parsed.name);
+        assertEquals(1_800L, parsed.elapsedSeconds);
+        assertEquals(0L, parsed.remainingSeconds, "a legacy row carries no countdown state");
+        assertFalse(parsed.id.isBlank(), "a legacy row still needs a generated id");
+
+        // ...and that is precisely the row rehydration is meant to repair.
+        UserProfile profile = new UserProfile();
+        profile.weightKg = 70.0;
+        profile.heightCm = 170.0;
+        SessionTransfer.rehydrateAfterImport(parsed, profile);
+        assertTrue(parsed.remainingSeconds > 0);
+    }
+
+    @Test
+    void aByteOrderMarkDoesNotEatTheFirstColumn() {
+        String withBom = "﻿name,mode,elapsed_seconds\nMorning,Marathon,600\n";
+        String[] lines = withBom.split("\n");
+        // importCsv strips the BOM before parsing the header; emulate that here.
+        List<String> header = SessionTransfer.parseCsvLine(lines[0].replace("﻿", ""));
+        SessionData parsed = SessionTransfer.parseCsvSession(header, SessionTransfer.parseCsvLine(lines[1]), 1);
+        assertNotNull(parsed);
+        assertEquals("Morning", parsed.name, "the BOM must not hide the name column");
     }
 
     @Test

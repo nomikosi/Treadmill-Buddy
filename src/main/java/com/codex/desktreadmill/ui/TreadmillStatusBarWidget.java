@@ -68,17 +68,10 @@ public final class TreadmillStatusBarWidget implements StatusBarWidget, StatusBa
             return "";
         }
         SessionMode mode = SessionMode.fromId(session.modeId);
-        long seconds;
-        String blockPrefix = "";
-        if (mode == SessionMode.INTERVAL
-                && session.intervalWalkSeconds > 0 && session.intervalBreakSeconds > 0) {
-            seconds = WorkoutMath.intervalBlockRemaining(session);
-            blockPrefix = (session.intervalWalking ? "Walk " : "Break ");
-        } else {
-            // Countdown modes show remaining; marathon and interval sessions
-            // without block config (old imports) count up.
-            seconds = mode.isCountdown() ? session.remainingSeconds : session.elapsedSeconds;
-        }
+        long seconds = WorkoutMath.displaySeconds(session);
+        String blockPrefix = mode == SessionMode.INTERVAL && WorkoutMath.hasIntervalBlocks(session)
+                ? (session.intervalWalking ? "Walk " : "Break ")
+                : "";
         TimeFormatter.DisplayTime time = TimeFormatter.displayTime(seconds);
         String prefix = time.getDayPrefix().isBlank() ? "" : time.getDayPrefix() + " ";
         return TreadmillBundle.message("widget.text",

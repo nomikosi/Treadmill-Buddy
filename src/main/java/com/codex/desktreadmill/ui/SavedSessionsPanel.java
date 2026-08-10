@@ -8,8 +8,10 @@ import com.codex.desktreadmill.model.SessionMode;
 import com.codex.desktreadmill.model.UnitSystem;
 import com.codex.desktreadmill.settings.TreadmillSettings;
 import com.intellij.icons.AllIcons;
+import com.intellij.openapi.Disposable;
 import com.intellij.openapi.actionSystem.ActionUpdateThread;
 import com.intellij.openapi.actionSystem.AnActionEvent;
+import com.intellij.openapi.actionSystem.CommonShortcuts;
 import com.intellij.openapi.actionSystem.ToggleAction;
 import com.intellij.openapi.project.DumbAware;
 import com.intellij.openapi.project.DumbAwareAction;
@@ -21,9 +23,12 @@ import com.intellij.ui.DoubleClickListener;
 import com.intellij.ui.SimpleTextAttributes;
 import com.intellij.ui.ToolbarDecorator;
 import com.intellij.ui.components.JBList;
+import com.intellij.ui.speedSearch.SpeedSearchSupply;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import javax.swing.AbstractAction;
+import javax.swing.Icon;
 import javax.swing.JComponent;
 import javax.swing.JList;
 import javax.swing.KeyStroke;
@@ -36,6 +41,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -64,14 +70,15 @@ public final class SavedSessionsPanel {
             TreadmillSettings settings,
             WorkoutEngine engine,
             Consumer<SessionData> onLoadSession,
-            Supplier<UnitSystem> units
+            Supplier<UnitSystem> units,
+            Disposable parentDisposable
     ) {
         this.project = project;
         this.settings = settings;
         this.engine = engine;
         this.onLoadSession = onLoadSession;
         this.units = units;
-        component = build();
+        component = build(parentDisposable);
     }
 
     public JComponent getComponent() {
@@ -99,7 +106,7 @@ public final class SavedSessionsPanel {
         }
     }
 
-    private JComponent build() {
+    private JComponent build(Disposable parentDisposable) {
         sessionsList.setCellRenderer(new ColoredListCellRenderer<>() {
             @Override
             protected void customizeCellRenderer(
@@ -132,23 +139,27 @@ public final class SavedSessionsPanel {
             }
         });
 
+        // The trash can deletes the highlighted session (undoable); the bulk
+        // older-than cleanup lives behind the history icon so the two aren't
+        // confused. Dropping the default minus button also dropped the Delete
+        // key that ToolbarDecorator had bound to it, so rebind that here -
+        // keymap-aware, and scoped to the panel so it doesn't outlive the list.
+        DumbAwareAction deleteAction = transferAction("sessions.delete", "sessions.delete.description",
+                AllIcons.Actions.GC, this::deleteSelectedSession, this::canDelete);
+        deleteAction.registerCustomShortcutSet(CommonShortcuts.getDelete(), sessionsList, parentDisposable);
+
         return ToolbarDecorator.createDecorator(sessionsList)
                 .disableAddAction()
                 .disableUpDownActions()
-                // Drop the default minus button; the trash-can extra action is
-                // the single delete control.
                 .disableRemoveAction()
-                // The trash can deletes the highlighted session (undoable); the
-                // bulk older-than cleanup lives behind the history icon so the
-                // two aren't confused.
-                .addExtraAction(transferAction("sessions.delete", "sessions.delete.description",
-                        AllIcons.Actions.GC, this::deleteSelectedSession))
+                .addExtraAction(deleteAction)
                 .addExtraAction(transferAction("sessions.export.csv.text", "sessions.export.csv.description",
                         AllIcons.ToolbarDecorator.Export, () -> SessionTransfer.exportCsv(project, settings)))
                 .addExtraAction(transferAction("sessions.export.json.text", "sessions.export.json.description",
                         AllIcons.FileTypes.Json, () -> SessionTransfer.exportJson(project, settings)))
                 .addExtraAction(transferAction("sessions.export.tcx.text", "sessions.export.tcx.description",
-                        AllIcons.Actions.Upload, () -> SessionTransfer.exportTcx(project, sessionsList.getSelectedValue())))
+                        AllIcons.Actions.Upload, () -> SessionTransfer.exportTcx(project, sessionsList.getSelectedValue()),
+                        this::hasSelection))
                 .addExtraAction(transferAction("sessions.import.csv.text", "sessions.import.csv.description",
                         AllIcons.ToolbarDecorator.Import, () -> {
                             if (SessionTransfer.importCsv(project, settings) > 0) {
@@ -167,11 +178,48 @@ public final class SavedSessionsPanel {
                 .createPanel();
     }
 
-    private static DumbAwareAction transferAction(String textKey, String descriptionKey, javax.swing.Icon icon, Runnable action) {
+    private boolean hasSelection() {
+        return sessionsList.getSelectedValue() != null;
+    }
+
+    /**
+     * Same guard the platform's own delete hook uses: while a speed-search
+     * popup is open, Delete belongs to the search field, not to the list.
+     */
+    private boolean canDelete() {
+        SpeedSearchSupply speedSearch = SpeedSearchSupply.getSupply(sessionsList);
+        return (speedSearch == null || !speedSearch.isPopupActive()) && hasSelection();
+    }
+
+    private static DumbAwareAction transferAction(
+            String textKey, String descriptionKey, Icon icon, Runnable action) {
+        return transferAction(textKey, descriptionKey, icon, action, null);
+    }
+
+    /**
+     * @param enabled when given, greys the button out unless it holds - custom
+     *                toolbar actions are always enabled otherwise, so a click
+     *                with nothing selected would silently do nothing.
+     */
+    private static DumbAwareAction transferAction(
+            String textKey, String descriptionKey, Icon icon, Runnable action, @Nullable BooleanSupplier enabled) {
         return new DumbAwareAction(TreadmillBundle.message(textKey), TreadmillBundle.message(descriptionKey), icon) {
             @Override
             public void actionPerformed(@NotNull AnActionEvent event) {
                 action.run();
+            }
+
+            @Override
+            public void update(@NotNull AnActionEvent event) {
+                if (enabled != null) {
+                    event.getPresentation().setEnabled(enabled.getAsBoolean());
+                }
+            }
+
+            @Override
+            public @NotNull ActionUpdateThread getActionUpdateThread() {
+                // update() reads the list selection, which is Swing state.
+                return ActionUpdateThread.EDT;
             }
         };
     }

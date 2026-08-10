@@ -101,6 +101,46 @@ class WorkoutMathTest {
     }
 
     @Test
+    void displaySecondsFallsBackToElapsedWhenCountdownStateIsMissing() {
+        // An open countdown whose remaining time could not be reconstructed
+        // (legacy CSV import, or an incomplete profile) must not show 00:00:00.
+        SessionData openCountdown = new SessionData();
+        openCountdown.modeId = SessionMode.CALORIE_BURN.name();
+        openCountdown.elapsedSeconds = 900L;
+        openCountdown.remainingSeconds = 0L;
+        openCountdown.completed = false;
+        assertEquals(900L, WorkoutMath.displaySeconds(openCountdown));
+
+        // A finished countdown legitimately reads zero.
+        openCountdown.completed = true;
+        assertEquals(0L, WorkoutMath.displaySeconds(openCountdown));
+    }
+
+    @Test
+    void displaySecondsUsesTheBlockClockOnlyForConfiguredIntervals() {
+        SessionData configured = new SessionData();
+        configured.modeId = SessionMode.INTERVAL.name();
+        configured.intervalWalkSeconds = 600L;
+        configured.intervalBreakSeconds = 120L;
+        configured.intervalPhaseSeconds = 100L;
+        configured.elapsedSeconds = 100L;
+        assertEquals(500L, WorkoutMath.displaySeconds(configured));
+
+        SessionData unconfigured = new SessionData();
+        unconfigured.modeId = SessionMode.INTERVAL.name();
+        unconfigured.elapsedSeconds = 300L;
+        assertEquals(300L, WorkoutMath.displaySeconds(unconfigured));
+    }
+
+    @Test
+    void displaySecondsCountsUpForMarathon() {
+        SessionData marathon = new SessionData();
+        marathon.modeId = SessionMode.MARATHON.name();
+        marathon.elapsedSeconds = 1_234L;
+        assertEquals(1_234L, WorkoutMath.displaySeconds(marathon));
+    }
+
+    @Test
     void recalcRemainingIsZeroForIntervalMode() {
         SessionData session = new SessionData();
         session.modeId = SessionMode.INTERVAL.name();

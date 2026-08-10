@@ -11,6 +11,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -35,7 +39,9 @@ class WorkoutEngineTest {
         profile.completed = true;
         settings.setProfile(profile);
         settings.setAutoPauseMinutes(0);
-        nowMillis = 1_000_000L;
+        // A realistic instant, and midday so "yesterday" stays a distinct
+        // calendar day in every time zone the tests might run in.
+        nowMillis = LocalDate.of(2026, 8, 10).atTime(12, 0).toInstant(ZoneOffset.UTC).toEpochMilli();
         engine = new WorkoutEngine(settings, () -> nowMillis, false);
     }
 
@@ -191,26 +197,181 @@ class WorkoutEngineTest {
         assertTrue(engine.getSession().intervalWalking);
     }
 
+    /** Runs the engine for `seconds`, then pauses (which triggers the records check). */
+    private void walkAndPause(long seconds) {
+        for (long remaining = seconds; remaining > 0; remaining -= 30) {
+            nowMillis += Math.min(30, remaining) * 1000;
+            engine.tick();
+        }
+        engine.pause();
+    }
+
     @Test
-    void firstRecordsCheckSeedsBaselinesFromHistory() {
+    void aSessionNeverSetsARecordAgainstItsOwnEarlierState() {
+        // Fresh install, no history at all. Walking, pausing, resuming and
+        // pausing again must not crown the first walk for beating itself.
+        // createdMillis is set so today's totals really do include this
+        // session - otherwise the day assertions below would pass trivially.
+        SessionData session = marathonSession();
+        session.createdMillis = nowMillis;
+        engine.startSession(session);
+        walkAndPause(60);
+        engine.resume();
+        walkAndPause(60);
+        engine.resume();
+        walkAndPause(60);
+
+        assertTrue(engine.getSession().distanceKm > 0, "the session must have walked something");
+        assertEquals("", settings.getLastSessionRecordId());
+        assertEquals(0L, settings.getLastDistanceRecordDay());
+        assertEquals(0L, settings.getLastStepsRecordDay());
+    }
+
+    @Test
+    void longestSessionRecordIsMarkedWhenItBeatsOtherSessions() {
         SessionData historic = marathonSession();
         historic.id = "old";
-        historic.elapsedSeconds = 7_200L;
-        historic.distanceKm = 8.0;
-        historic.steps = 11_000L;
-        historic.createdMillis = nowMillis;
+        historic.elapsedSeconds = 120L;
+        historic.distanceKm = 0.2;
+        historic.steps = 300L;
+        historic.createdMillis = nowMillis - 86_400_000L;
         settings.saveSession(historic);
 
         engine.startSession(marathonSession());
-        nowMillis += 10_000;
-        engine.tick();
-        engine.pause();
+        walkAndPause(60);
+        // Still shorter than the 120s record: nothing to announce yet.
+        assertEquals("", settings.getLastSessionRecordId());
 
-        // The pause triggered the first records check: it must adopt the
-        // historical bests, not crown today's short walk as a record.
-        assertTrue(settings.isRecordsSeeded());
-        assertEquals(7_200L, settings.getBestSessionSeconds());
-        assertEquals(8.0, settings.getBestDayDistanceKm(), 0.5);
+        engine.resume();
+        walkAndPause(120);
+        assertEquals("test", settings.getLastSessionRecordId());
+    }
+
+    @Test
+    void dayDistanceRecordIsMarkedWhenTodayBeatsOtherDays() {
+        SessionData yesterday = marathonSession();
+        yesterday.id = "yesterday";
+        yesterday.elapsedSeconds = 600L;
+        yesterday.distanceKm = 0.1;
+        yesterday.steps = 100L;
+        yesterday.createdMillis = nowMillis - 86_400_000L;
+        settings.saveSession(yesterday);
+
+        SessionData today = marathonSession();
+        today.createdMillis = nowMillis;
+        engine.startSession(today);
+        walkAndPause(120);
+        long expectedDay = Instant.ofEpochMilli(nowMillis).atZone(ZoneId.systemDefault()).toLocalDate().toEpochDay();
+        assertEquals(expectedDay, settings.getLastDistanceRecordDay(),
+                "the distance guard must be keyed on today, not just any non-zero day");
+    }
+
+    @Test
+    void resetLetsTheSameSessionEarnTheRecordAgain() {
+        SessionData historic = marathonSession();
+        historic.id = "old";
+        historic.elapsedSeconds = 120L;
+        historic.createdMillis = nowMillis - 86_400_000L;
+        settings.saveSession(historic);
+
+        engine.startSession(marathonSession());
+        walkAndPause(180);
+        assertEquals("test", settings.getLastSessionRecordId());
+
+        // Reset restarts the walk under the same id; the guard must let go,
+        // otherwise this session can never announce a record again.
+        engine.reset();
+        assertEquals("", settings.getLastSessionRecordId());
+        engine.resume();
+        walkAndPause(180);
+        assertEquals("test", settings.getLastSessionRecordId());
+    }
+
+    @Test
+    void dayStepsAndDistanceGuardsAreNotCrossWired() {
+        LocalDate today = LocalDate.of(2026, 8, 10);
+        // Yesterday: short but dense (many steps, little distance) so that
+        // today can beat the distance record without beating the step record.
+        SessionData yesterday = record("yesterday", 600L, 1.0, 99_999L, today.minusDays(1));
+        SessionData current = record("current", 600L, 5.0, 10L, today);
+
+        WorkoutEngine.BrokenRecords broken =
+                decide(List.of(yesterday, current), current, today, "", 0L, 0L);
+        assertTrue(broken.dayDistance, "5 km beats yesterday's 1 km");
+        assertFalse(broken.daySteps, "10 steps does not beat yesterday's 99,999");
+
+        // And the mirror image: the steps guard alone must block steps.
+        WorkoutEngine.BrokenRecords stepsBlocked =
+                decide(List.of(yesterday, current), current, today, "", 0L, today.toEpochDay());
+        assertTrue(stepsBlocked.dayDistance, "the steps guard must not suppress the distance record");
+    }
+
+    /** The record decision is pure, so the once-only rules can be checked directly. */
+    private static WorkoutEngine.BrokenRecords decide(
+            List<SessionData> history, SessionData current, LocalDate today,
+            String lastSessionId, long lastDistanceDay, long lastStepsDay
+    ) {
+        return WorkoutEngine.brokenRecords(history, current, today, ZoneOffset.UTC,
+                lastSessionId, lastDistanceDay, lastStepsDay);
+    }
+
+    private static SessionData record(String id, long seconds, double km, long steps, LocalDate day) {
+        SessionData session = new SessionData();
+        session.id = id;
+        session.elapsedSeconds = seconds;
+        session.distanceKm = km;
+        session.steps = steps;
+        session.createdMillis = day.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
+        return session;
+    }
+
+    @Test
+    void aSoloSessionNeverBreaksARecordAgainstItself() {
+        LocalDate today = LocalDate.of(2026, 8, 10);
+        SessionData only = record("only", 3_600L, 5.0, 7_000L, today);
+        WorkoutEngine.BrokenRecords broken = decide(List.of(only), only, today, "", 0L, 0L);
+        // The baseline must be 0, not the session's own 3600 - that is the
+        // difference between excluding the current session and not.
+        assertEquals(0L, broken.previousLongestSeconds, "the session must not be its own baseline");
+        assertFalse(broken.longestSession, "no other session to beat");
+        assertFalse(broken.dayDistance, "no other day to beat");
+        assertFalse(broken.daySteps, "no other day to beat");
+    }
+
+    @Test
+    void theSameSessionIsNotAnnouncedTwice() {
+        LocalDate today = LocalDate.of(2026, 8, 10);
+        SessionData older = record("old", 600L, 1.0, 1_000L, today.minusDays(1));
+        SessionData current = record("current", 1_200L, 2.0, 2_000L, today);
+        List<SessionData> history = List.of(older, current);
+
+        assertTrue(decide(history, current, today, "", 0L, 0L).longestSession);
+        // Once "current" is recorded as announced, a later pause stays quiet.
+        assertFalse(decide(history, current, today, "current", 0L, 0L).longestSession);
+    }
+
+    @Test
+    void aSecondSessionTheSameDayDoesNotReAnnounceTheDayRecord() {
+        LocalDate today = LocalDate.of(2026, 8, 10);
+        long epochDay = today.toEpochDay();
+        SessionData yesterday = record("yesterday", 600L, 1.0, 1_000L, today.minusDays(1));
+        SessionData first = record("first", 600L, 1.5, 1_500L, today);
+        SessionData second = record("second", 600L, 1.5, 1_500L, today);
+
+        // First session of the day beats yesterday: announce.
+        assertTrue(decide(List.of(yesterday, first), first, today, "", 0L, 0L).dayDistance);
+        // Second session pushes the day total higher, but the day already fired.
+        WorkoutEngine.BrokenRecords broken =
+                decide(List.of(yesterday, first, second), second, today, "", epochDay, epochDay);
+        assertFalse(broken.dayDistance);
+        assertFalse(broken.daySteps);
+    }
+
+    @Test
+    void durationFormatDropsTheZeroHourForShortSessions() {
+        assertEquals("45s", WorkoutEngine.formatDuration(45));
+        assertEquals("25m", WorkoutEngine.formatDuration(25 * 60));
+        assertEquals("1h 05m", WorkoutEngine.formatDuration(3600 + 5 * 60));
     }
 
     @Test

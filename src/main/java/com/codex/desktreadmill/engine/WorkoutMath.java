@@ -66,6 +66,33 @@ public final class WorkoutMath {
         return Math.max(0L, target - session.intervalPhaseSeconds);
     }
 
+    public static boolean hasIntervalBlocks(SessionData session) {
+        return session.intervalWalkSeconds > 0 && session.intervalBreakSeconds > 0;
+    }
+
+    /**
+     * Seconds the clock should show: the current block for a configured
+     * interval session, the countdown for calorie/KG burn, elapsed otherwise.
+     *
+     * <p>Sessions whose countdown state couldn't be reconstructed - an interval
+     * session with no block lengths, or an open countdown whose remaining time
+     * is unknown - fall back to counting up. Without the fallback such a
+     * session (typically imported from an older CSV, or recorded before the
+     * profile was filled in) would sit at a dead 00:00:00.</p>
+     */
+    public static long displaySeconds(SessionData session) {
+        SessionMode mode = SessionMode.fromId(session.modeId);
+        if (mode == SessionMode.INTERVAL) {
+            return hasIntervalBlocks(session) ? intervalBlockRemaining(session) : session.elapsedSeconds;
+        }
+        if (mode.isCountdown()) {
+            return session.remainingSeconds > 0 || session.completed
+                    ? session.remainingSeconds
+                    : session.elapsedSeconds;
+        }
+        return session.elapsedSeconds;
+    }
+
     private static void recordSegmentSecond(SessionData session) {
         List<SpeedSegment> segments = session.segments;
         if (!segments.isEmpty()) {

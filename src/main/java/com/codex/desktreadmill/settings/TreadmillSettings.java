@@ -250,37 +250,37 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
         state.streakRiskHour = Math.max(0, Math.min(23, hour));
     }
 
-    public long getBestSessionSeconds() {
-        return state.bestSessionSeconds;
+    /**
+     * Guards below make each personal-record notification fire once. They are
+     * persisted so an IDE restart doesn't re-announce the same record, and are
+     * keyed the way the record is measured: the session record by session id,
+     * the day records by epoch day. Bests themselves aren't stored - they are
+     * derived from history, so a record always means "best of what you
+     * actually have"; the flip side is that deleting your best day lowers the
+     * bar for the days that remain.
+     */
+    public String getLastSessionRecordId() {
+        return state.lastSessionRecordId;
     }
 
-    public void setBestSessionSeconds(long seconds) {
-        state.bestSessionSeconds = seconds;
+    public void setLastSessionRecordId(String sessionId) {
+        state.lastSessionRecordId = sessionId;
     }
 
-    public double getBestDayDistanceKm() {
-        return state.bestDayDistanceKm;
+    public long getLastDistanceRecordDay() {
+        return state.lastDistanceRecordDay;
     }
 
-    public void setBestDayDistanceKm(double km) {
-        state.bestDayDistanceKm = km;
+    public void setLastDistanceRecordDay(long epochDay) {
+        state.lastDistanceRecordDay = epochDay;
     }
 
-    public long getBestDaySteps() {
-        return state.bestDaySteps;
+    public long getLastStepsRecordDay() {
+        return state.lastStepsRecordDay;
     }
 
-    public void setBestDaySteps(long steps) {
-        state.bestDaySteps = steps;
-    }
-
-    /** True once stored record baselines were seeded from the full history. */
-    public boolean isRecordsSeeded() {
-        return state.recordsSeeded;
-    }
-
-    public void setRecordsSeeded(boolean seeded) {
-        state.recordsSeeded = seeded;
+    public void setLastStepsRecordDay(long epochDay) {
+        state.lastStepsRecordDay = epochDay;
     }
 
     /** Picks up sessions another IDE instance wrote since our last read. */
@@ -334,9 +334,8 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
         public long lastWeeklyGoalAchievedWeek = 0L;
         public int streakRestDaysPerWeek = 0;
         public int streakRiskHour = 17;
-        public long bestSessionSeconds = 0L;
-        public double bestDayDistanceKm = 0.0;
-        public long bestDaySteps = 0L;
-        public boolean recordsSeeded = false;
+        public String lastSessionRecordId = "";
+        public long lastDistanceRecordDay = 0L;
+        public long lastStepsRecordDay = 0L;
     }
 }

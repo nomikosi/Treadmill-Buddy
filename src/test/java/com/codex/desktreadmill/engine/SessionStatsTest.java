@@ -138,6 +138,40 @@ class SessionStatsTest {
     }
 
     @Test
+    void longestSessionSecondsCanExcludeTheRunningSession() {
+        SessionData shorter = session(1_000L, 1.0, 100, 10.0);
+        shorter.id = "a";
+        shorter.elapsedSeconds = 600L;
+        SessionData longer = session(2_000L, 1.0, 100, 10.0);
+        longer.id = "b";
+        longer.elapsedSeconds = 1_800L;
+        List<SessionData> sessions = List.of(shorter, longer);
+
+        assertEquals(1_800L, SessionStats.longestSessionSeconds(sessions, null));
+        assertEquals(600L, SessionStats.longestSessionSeconds(sessions, "b"));
+        // With only itself in the history there is nothing to beat.
+        assertEquals(0L, SessionStats.longestSessionSeconds(List.of(longer), "b"));
+    }
+
+    @Test
+    void bestDayCanExcludeToday() {
+        ZoneId zone = ZoneOffset.UTC;
+        LocalDate today = LocalDate.of(2026, 8, 10);
+        List<SessionData> sessions = List.of(
+                session(epochMillisAtStartOfDay(today, zone), 5.0, 6_000, 200.0),
+                session(epochMillisAtStartOfDay(today.minusDays(1), zone), 2.0, 2_000, 90.0),
+                session(epochMillisAtStartOfDay(today.minusDays(1), zone) + 60_000L, 1.0, 1_000, 40.0)
+        );
+        SessionStats.DayTotals excludingToday = SessionStats.bestDay(sessions, zone, today.toEpochDay());
+        assertEquals(3.0, excludingToday.distanceKm, 0.0001);
+        assertEquals(3_000L, excludingToday.steps);
+
+        SessionStats.DayTotals everything = SessionStats.bestDay(sessions, zone, Long.MIN_VALUE);
+        assertEquals(5.0, everything.distanceKm, 0.0001);
+        assertEquals(6_000L, everything.steps);
+    }
+
+    @Test
     void recordsFindLongestSessionAndBestDays() {
         ZoneId zone = ZoneOffset.UTC;
         LocalDate day = LocalDate.of(2026, 7, 10);

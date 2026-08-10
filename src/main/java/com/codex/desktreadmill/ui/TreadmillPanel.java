@@ -107,7 +107,8 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         algorithmCombo.setSelectedItem(settings.getSelectedAlgorithm());
         sessionNameField.setText(defaultSessionName(SessionMode.MARATHON));
         floatingClock = new FloatingClockWindow(project, this::toggleRunning, () -> saveCurrentSession(true));
-        savedSessionsPanel = new SavedSessionsPanel(project, settings, engine, this::loadSession, () -> currentUnits);
+        savedSessionsPanel = new SavedSessionsPanel(
+                project, settings, engine, this::loadSession, () -> currentUnits, this);
 
         add(clockDisplay, BorderLayout.NORTH);
         add(new JBScrollPane(createBody()), BorderLayout.CENTER);
@@ -424,24 +425,13 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
     private void updateDisplay() {
         syncUnitsIfChanged();
         SessionData session = engine.getSession();
-        long seconds;
-        if (session != null) {
-            SessionMode mode = SessionMode.fromId(session.modeId);
-            if (mode == SessionMode.INTERVAL && hasIntervalBlocks(session)) {
-                seconds = WorkoutMath.intervalBlockRemaining(session);
-            } else {
-                // Interval sessions without block config (e.g. imported from an
-                // old CSV) fall back to counting up like a marathon session.
-                seconds = mode.isCountdown() ? session.remainingSeconds : session.elapsedSeconds;
-            }
-        } else {
-            seconds = previewSecondsFromInputs();
-        }
+        long seconds = session != null ? WorkoutMath.displaySeconds(session) : previewSecondsFromInputs();
         TimeFormatter.DisplayTime displayTime = TimeFormatter.displayTime(seconds);
         String clockPrefix = displayTime.getDayPrefix();
         // Interval blocks are always well under a day, so the day-prefix slot
         // is free to show which block the clock is counting down.
-        if (session != null && SessionMode.fromId(session.modeId) == SessionMode.INTERVAL && hasIntervalBlocks(session)) {
+        if (session != null && SessionMode.fromId(session.modeId) == SessionMode.INTERVAL
+                && WorkoutMath.hasIntervalBlocks(session)) {
             clockPrefix = session.intervalWalking ? "Walk" : "Break";
         }
         clockDisplay.setDisplay(clockPrefix, displayTime.getTimeText());
@@ -468,7 +458,7 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         } else if (mode == SessionMode.CALORIE_BURN) {
             targetLabel.setText(String.format("%.0f kcal", session.targetCalories));
         } else if (mode == SessionMode.INTERVAL) {
-            targetLabel.setText(hasIntervalBlocks(session)
+            targetLabel.setText(WorkoutMath.hasIntervalBlocks(session)
                     ? String.format("%d / %d min",
                     session.intervalWalkSeconds / 60, session.intervalBreakSeconds / 60)
                     : TreadmillBundle.message("panel.target.open"));
@@ -480,7 +470,7 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         String status = engine.isRunning()
                 ? TreadmillBundle.message("status.running")
                 : session.completed ? TreadmillBundle.message("status.complete") : TreadmillBundle.message("status.paused");
-        if (mode == SessionMode.INTERVAL && hasIntervalBlocks(session) && engine.isRunning()) {
+        if (mode == SessionMode.INTERVAL && WorkoutMath.hasIntervalBlocks(session) && engine.isRunning()) {
             status += session.intervalWalking
                     ? " - " + TreadmillBundle.message("status.interval.walk")
                     : " - " + TreadmillBundle.message("status.interval.break");
@@ -791,10 +781,6 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         if (!populatingFields && engine.getSession() == null) {
             updateDisplay();
         }
-    }
-
-    private static boolean hasIntervalBlocks(SessionData session) {
-        return session.intervalWalkSeconds > 0 && session.intervalBreakSeconds > 0;
     }
 
     /** Multi-speed sessions get a per-speed breakdown tooltip on the distance tile. */
