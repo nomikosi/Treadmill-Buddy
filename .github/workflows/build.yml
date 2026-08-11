@@ -9,7 +9,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Rejects a tampered or unknown gradle-wrapper.jar before anything runs it.
       - uses: gradle/actions/wrapper-validation@v4
@@ -33,7 +33,7 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Rejects a tampered or unknown gradle-wrapper.jar before anything runs it.
       - uses: gradle/actions/wrapper-validation@v4
