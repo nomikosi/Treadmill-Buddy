@@ -69,7 +69,10 @@ public final class TreadmillStatusBarWidget implements StatusBarWidget, StatusBa
         }
         SessionMode mode = SessionMode.fromId(session.modeId);
         long seconds = WorkoutMath.displaySeconds(session);
-        String blockPrefix = mode == SessionMode.INTERVAL && WorkoutMath.hasIntervalBlocks(session)
+        // Only a running session gets the block prefix: "Walk 12:34" on a
+        // paused widget claims the user is mid-block when nothing is moving.
+        String blockPrefix = engine.isRunning()
+                && mode == SessionMode.INTERVAL && WorkoutMath.hasIntervalBlocks(session)
                 ? (session.intervalWalking ? "Walk " : "Break ")
                 : "";
         TimeFormatter.DisplayTime time = TimeFormatter.displayTime(seconds);

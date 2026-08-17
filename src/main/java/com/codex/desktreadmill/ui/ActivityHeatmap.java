@@ -68,6 +68,15 @@ public final class ActivityHeatmap extends JComponent {
     }
 
     private LocalDate firstMonday() {
+        return firstVisibleDay(today);
+    }
+
+    /**
+     * The oldest day the grid can show. Exposed so visibility decisions count
+     * walking days inside this window rather than across all history - someone
+     * returning after a long break shouldn't be shown a blank grid.
+     */
+    public static LocalDate firstVisibleDay(LocalDate today) {
         return today.with(DayOfWeek.MONDAY).minusWeeks(WEEKS - 1);
     }
 
@@ -131,9 +140,16 @@ public final class ActivityHeatmap extends JComponent {
     @Override
     public String getToolTipText(MouseEvent event) {
         int cell = cellSize();
-        int week = (event.getX() - gridX()) / cell;
-        int day = (event.getY() - labelHeight()) / cell;
-        if (week < 0 || week >= WEEKS || day < 0 || day >= 7) {
+        int relX = event.getX() - gridX();
+        int relY = event.getY() - labelHeight();
+        // Reject negative offsets before dividing: -3 / 9 truncates to 0, so
+        // hovering just left of or above the grid would report the first cell.
+        if (relX < 0 || relY < 0) {
+            return null;
+        }
+        int week = relX / cell;
+        int day = relY / cell;
+        if (week >= WEEKS || day >= 7) {
             return null;
         }
         LocalDate date = firstMonday().plusWeeks(week).plusDays(day);

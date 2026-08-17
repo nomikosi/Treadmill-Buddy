@@ -493,14 +493,15 @@ public final class WorkoutEngine implements Disposable {
         for (Listener listener : listeners) {
             listener.sessionsPersisted();
         }
-        maybeCelebrateDailyGoal();
-        maybeCelebrateWeeklyGoal();
+        if (interactive) {
+            // One deep copy of the history, shared by both goal checks.
+            List<SessionData> history = settings.getSessions();
+            maybeCelebrateDailyGoal(history);
+            maybeCelebrateWeeklyGoal(history);
+        }
     }
 
-    private void maybeCelebrateDailyGoal() {
-        if (!interactive) {
-            return;
-        }
+    private void maybeCelebrateDailyGoal(List<SessionData> history) {
         GoalType goalType = settings.getDailyGoalType();
         double target = settings.getDailyGoalValue();
         if (goalType == GoalType.NONE || target <= 0) {
@@ -512,7 +513,7 @@ public final class WorkoutEngine implements Disposable {
             return;
         }
         long startOfToday = today.atStartOfDay(zone).toInstant().toEpochMilli();
-        SessionStats.Totals totals = SessionStats.totalsSince(settings.getSessions(), startOfToday);
+        SessionStats.Totals totals = SessionStats.totalsSince(history, startOfToday);
         double progress = switch (goalType) {
             case STEPS -> totals.steps;
             case DISTANCE -> totals.distanceKm;
@@ -529,10 +530,7 @@ public final class WorkoutEngine implements Disposable {
         }
     }
 
-    private void maybeCelebrateWeeklyGoal() {
-        if (!interactive) {
-            return;
-        }
+    private void maybeCelebrateWeeklyGoal(List<SessionData> history) {
         GoalType goalType = settings.getWeeklyGoalType();
         double target = settings.getWeeklyGoalValue();
         if (goalType == GoalType.NONE || target <= 0) {
@@ -545,7 +543,7 @@ public final class WorkoutEngine implements Disposable {
             return;
         }
         long startOfWeek = weekStart.atStartOfDay(zone).toInstant().toEpochMilli();
-        SessionStats.Totals totals = SessionStats.totalsSince(settings.getSessions(), startOfWeek);
+        SessionStats.Totals totals = SessionStats.totalsSince(history, startOfWeek);
         double progress = switch (goalType) {
             case STEPS -> totals.steps;
             case DISTANCE -> totals.distanceKm;

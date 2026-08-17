@@ -8,9 +8,11 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -116,6 +118,71 @@ class SessionStoreTest {
         store.deleteSession("a");
         store.reload();
         assertNull(store.findSession("a"));
+    }
+
+    @Test
+    void migrateReportsFailureWhenTheStoreIsUnwritable() throws IOException {
+        // The store path's parent is a regular file, so createDirectories fails
+        // and nothing can ever reach disk.
+        Path blocker = tempDir.resolve("blocker");
+        Files.writeString(blocker, "not a directory");
+        SessionStore store = new SessionStore(blocker.resolve("sessions.json"));
+
+        assertFalse(store.migrate(List.of(session("a", "Legacy"))),
+                "a migration that never reached disk must say so - the caller keeps the XML copy");
+        // The sessions are still usable in memory for this run.
+        assertNotNull(store.findSession("a"));
+    }
+
+    @Test
+    void migrateWithNothingToAddSucceeds() {
+        SessionStore store = new SessionStore(tempDir.resolve("sessions.json"));
+        assertTrue(store.migrate(List.of()), "an empty migration has nothing to lose");
+    }
+
+    @Test
+    void writeFailureCallbackFiresWhenSavesCannotReachDisk() throws IOException {
+        Path blocker = tempDir.resolve("blocker");
+        Files.writeString(blocker, "not a directory");
+        SessionStore store = new SessionStore(blocker.resolve("sessions.json"));
+        List<String> failures = new ArrayList<>();
+        store.onWriteFailure(() -> failures.add("failed"));
+
+        store.saveSession(session("a", "Doomed walk"));
+        assertEquals(1, failures.size(), "a save that stayed in memory only must be reported");
+    }
+
+    @Test
+    void batchSaveWritesAllSessionsAndReplacesById() {
+        Path file = tempDir.resolve("sessions.json");
+        SessionStore store = new SessionStore(file);
+        store.saveSession(session("a", "Before"));
+        store.saveSessions(List.of(session("a", "After"), session("b", "New"), session("c", "Also new")));
+
+        SessionStore reopened = new SessionStore(file);
+        assertEquals(3, reopened.getSessions().size());
+        assertEquals("After", reopened.findSession("a").name);
+        assertNotNull(reopened.findSession("c"));
+    }
+
+    @Test
+    void writeStillMergesOtherIdesSessionsWhenTheFileChangedOnDisk() throws IOException {
+        Path file = tempDir.resolve("sessions.json");
+        SessionStore store = new SessionStore(file);
+        store.saveSession(session("a", "Mine"));
+
+        // Another IDE writes; make sure the timestamp actually differs even on
+        // coarse filesystem clocks.
+        SessionStore other = new SessionStore(file);
+        other.saveSession(session("b", "Theirs"));
+        Files.setLastModifiedTime(file, java.nio.file.attribute.FileTime.fromMillis(
+                Files.getLastModifiedTime(file).toMillis() + 5_000));
+
+        // The next write must notice the change and keep "b".
+        store.saveSession(session("c", "Mine too"));
+        SessionStore reopened = new SessionStore(file);
+        assertEquals(3, reopened.getSessions().size());
+        assertNotNull(reopened.findSession("b"), "the other IDE's session must survive our write");
     }
 
     @Test

@@ -1,11 +1,14 @@
 package com.codex.desktreadmill.settings;
 
+import com.codex.desktreadmill.TreadmillBundle;
+import com.codex.desktreadmill.TreadmillNotifications;
 import com.codex.desktreadmill.calories.CalorieAlgorithm;
 import com.codex.desktreadmill.model.GoalType;
 import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.SpeedPreset;
 import com.codex.desktreadmill.model.UnitSystem;
 import com.codex.desktreadmill.model.UserProfile;
+import com.intellij.ide.actions.RevealFileAction;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.PersistentStateComponent;
 import com.intellij.openapi.components.Service;
@@ -20,6 +23,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service(Service.Level.APP)
 @State(name = "DeskTreadmillStopwatch", storages = @Storage("deskTreadmillStopwatch.xml"))
@@ -29,11 +33,35 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
 
     public TreadmillSettings() {
         this(Paths.get(System.getProperty("user.home"), ".treadmill-buddy", "sessions.json"));
+        sessionStore.onWriteFailure(this::notifyWriteFailureOnce);
     }
 
     /** Test constructor: keeps session history out of the real user home. */
     public TreadmillSettings(Path sessionsFile) {
         sessionStore = new SessionStore(sessionsFile);
+    }
+
+    /** Guards the storage-failure balloon; one warning per IDE run is enough. */
+    private final AtomicBoolean writeFailureNotified = new AtomicBoolean();
+
+    private void notifyWriteFailureOnce() {
+        if (!writeFailureNotified.compareAndSet(false, true)) {
+            return;
+        }
+        // The store can fail from early service init; post the balloon later
+        // and never let notification plumbing break a save call.
+        ApplicationManager.getApplication().invokeLater(() -> {
+            try {
+                TreadmillNotifications.withAction(null,
+                        TreadmillBundle.message("notification.store.failed.title"),
+                        TreadmillBundle.message("notification.store.failed.content"),
+                        TreadmillBundle.message("notification.store.failed.action"),
+                        () -> RevealFileAction.openDirectory(
+                                Paths.get(System.getProperty("user.home"), ".treadmill-buddy")));
+            } catch (RuntimeException notificationUnavailable) {
+                // Already logged by the store; nothing more we can do.
+            }
+        });
     }
 
     public static TreadmillSettings getInstance() {
@@ -64,9 +92,11 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
         }
         // Sessions used to live in this per-IDE XML file; move them to the
         // shared home-directory store so history survives IDE reinstalls
-        // and is visible from every JetBrains IDE.
-        if (!state.sessions.isEmpty()) {
-            sessionStore.migrate(state.sessions);
+        // and is visible from every JetBrains IDE. The XML copy is dropped
+        // only once the store confirms the write reached disk - otherwise an
+        // unwritable home directory would wipe the pre-migration history
+        // from the only place that still had it.
+        if (!state.sessions.isEmpty() && sessionStore.migrate(state.sessions)) {
             state.sessions.clear();
         }
         if (state.selectedAlgorithmId == null || state.selectedAlgorithmId.isBlank()) {
@@ -112,6 +142,23 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
         }
         sessionStore.saveSession(copy);
         state.lastSessionId = copy.id;
+    }
+
+    /** Bulk save with a single store write; imports use this instead of N single saves. */
+    public void saveSessions(List<SessionData> sessions) {
+        if (sessions.isEmpty()) {
+            return;
+        }
+        List<SessionData> copies = new ArrayList<>();
+        for (SessionData session : sessions) {
+            SessionData copy = session.copy();
+            if (copy.id == null || copy.id.isBlank()) {
+                copy.id = System.currentTimeMillis() + "-" + copies.size();
+            }
+            copies.add(copy);
+        }
+        sessionStore.saveSessions(copies);
+        state.lastSessionId = copies.get(copies.size() - 1).id;
     }
 
     public void deleteSession(String id) {

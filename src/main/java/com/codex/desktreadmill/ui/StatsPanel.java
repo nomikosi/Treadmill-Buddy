@@ -93,7 +93,12 @@ public final class StatsPanel extends JPanel {
 
         Map<Long, Double> kmByDay = SessionStats.distanceByEpochDay(sessions, zone);
         heatmap.setData(kmByDay, todayDate, currentUnits.distanceUnit(), currentUnits.distanceFromKm(1.0));
-        heatmap.setVisible(kmByDay.size() >= 5);
+        // Count walking days inside the grid's window, not across all history:
+        // a user back from a long break has plenty of old days but an all-empty
+        // grid, and hiding it then is exactly right - showing it is not.
+        long firstVisible = ActivityHeatmap.firstVisibleDay(todayDate).toEpochDay();
+        long visibleWalkingDays = kmByDay.keySet().stream().filter(day -> day >= firstVisible).count();
+        heatmap.setVisible(visibleWalkingDays >= 5);
 
         int streak = SessionStats.streakDays(sessions, todayDate, zone, settings.getStreakRestDaysPerWeek());
         String streakText = streak > 1 ? "   |   Streak " + streak + " days" : "";

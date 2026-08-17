@@ -243,7 +243,7 @@ public final class SessionTransfer {
             existingIds.add(session.id);
             existingKeys.add(dedupeKey(session));
         }
-        int imported = 0;
+        List<SessionData> toImport = new ArrayList<>();
         for (int i = 1; i < lines.size(); i++) {
             if (lines.get(i).isBlank()) {
                 continue;
@@ -255,13 +255,15 @@ public final class SessionTransfer {
             rehydrateAfterImport(session, settings.getProfile());
             existingIds.add(session.id);
             existingKeys.add(dedupeKey(session));
-            settings.saveSession(session);
-            imported++;
+            toImport.add(session);
         }
+        // One store write for the whole file: saving row by row rewrites the
+        // JSON once per session, which freezes the EDT on a real backup.
+        settings.saveSessions(toImport);
         TreadmillNotifications.info(project,
                 TreadmillBundle.message("notification.title"),
-                TreadmillBundle.message("notification.import.done", imported));
-        return imported;
+                TreadmillBundle.message("notification.import.done", toImport.size()));
+        return toImport.size();
     }
 
     /**
@@ -296,14 +298,14 @@ public final class SessionTransfer {
             existingIds.add(session.id);
             existingKeys.add(dedupeKey(session));
         }
-        int count = 0;
+        List<SessionData> toImport = new ArrayList<>();
         for (SessionData session : imported) {
             if (session == null || session.id == null || session.id.isBlank()
                     || existingIds.contains(session.id) || existingKeys.contains(dedupeKey(session))) {
                 continue;
             }
             if (session.segments == null) {
-                session.segments = new java.util.ArrayList<>();
+                session.segments = new ArrayList<>();
             }
             if (session.name == null) {
                 // A hand-edited file can carry a null name, which would later
@@ -312,13 +314,14 @@ public final class SessionTransfer {
             }
             existingIds.add(session.id);
             existingKeys.add(dedupeKey(session));
-            settings.saveSession(session);
-            count++;
+            toImport.add(session);
         }
+        // One store write for the whole file, matching the CSV path.
+        settings.saveSessions(toImport);
         TreadmillNotifications.info(project,
                 TreadmillBundle.message("notification.title"),
-                TreadmillBundle.message("notification.import.done", count));
-        return count;
+                TreadmillBundle.message("notification.import.done", toImport.size()));
+        return toImport.size();
     }
 
     /**

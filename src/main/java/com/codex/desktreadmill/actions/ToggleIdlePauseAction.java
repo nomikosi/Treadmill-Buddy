@@ -26,6 +26,8 @@ public final class ToggleIdlePauseAction extends ToggleAction implements DumbAwa
 
     @Override
     public @NotNull ActionUpdateThread getActionUpdateThread() {
-        return ActionUpdateThread.BGT;
+        // isSelected reads engine state that is written on the EDT and not
+        // volatile; checking from a background thread could show a stale mark.
+        return ActionUpdateThread.EDT;
     }
 }
