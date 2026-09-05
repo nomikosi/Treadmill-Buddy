@@ -1,5 +1,6 @@
 package com.codex.desktreadmill.ui;
 
+import com.codex.desktreadmill.TreadmillBundle;
 import com.intellij.ui.JBColor;
 import com.intellij.util.ui.JBUI;
 import com.intellij.util.ui.UIUtil;
@@ -158,7 +159,8 @@ public final class ActivityHeatmap extends JComponent {
         }
         double km = kmByDay.getOrDefault(date.toEpochDay(), 0.0);
         return km > 0
-                ? String.format("%s: %.2f %s", date, km * unitFactor, distanceUnit)
-                : date + ": no walking";
+                ? TreadmillBundle.message("heatmap.tooltip.walked",
+                        date.toString(), String.format("%.2f", km * unitFactor), distanceUnit)
+                : TreadmillBundle.message("heatmap.tooltip.none", date.toString());
     }
 }

@@ -52,8 +52,8 @@ public final class SessionTransfer {
         if (notifyIfEmpty(project, sessions)) {
             return;
         }
-        VirtualFileWrapper wrapper = pickSaveFile(project, "Export Treadmill Sessions",
-                "Save all saved sessions as a CSV file", "csv", "treadmill-sessions.csv");
+        VirtualFileWrapper wrapper = pickSaveFile(project, TreadmillBundle.message("transfer.export.title"),
+                TreadmillBundle.message("transfer.export.csv.description"), "csv", "treadmill-sessions.csv");
         if (wrapper == null) {
             return;
         }
@@ -108,8 +108,8 @@ public final class SessionTransfer {
         if (notifyIfEmpty(project, sessions)) {
             return;
         }
-        VirtualFileWrapper wrapper = pickSaveFile(project, "Export Treadmill Sessions",
-                "Save all saved sessions as a JSON file", "json", "treadmill-sessions.json");
+        VirtualFileWrapper wrapper = pickSaveFile(project, TreadmillBundle.message("transfer.export.title"),
+                TreadmillBundle.message("transfer.export.json.description"), "json", "treadmill-sessions.json");
         if (wrapper == null) {
             return;
         }
@@ -120,24 +120,35 @@ public final class SessionTransfer {
     public static void exportTcx(@Nullable Project project, @Nullable SessionData session) {
         if (session == null || session.elapsedSeconds == 0 || session.createdMillis <= 0) {
             Messages.showInfoMessage(project,
-                    "Select a saved session with walked time to export it as TCX.", "Export TCX");
+                    TreadmillBundle.message("transfer.export.tcx.noSelection"),
+                    TreadmillBundle.message("transfer.export.tcx.dialogTitle"));
             return;
         }
-        VirtualFileWrapper wrapper = pickSaveFile(project, "Export Session as TCX",
-                "Save this session as a TCX workout file for Garmin Connect, Strava, and similar services",
+        VirtualFileWrapper wrapper = pickSaveFile(project, TreadmillBundle.message("transfer.export.tcx.title"),
+                TreadmillBundle.message("transfer.export.tcx.description"),
                 "tcx", safeFileName(session.name) + ".tcx");
         if (wrapper == null) {
             return;
         }
+        writeFile(project, wrapper, buildTcx(session), 1);
+    }
+
+    /**
+     * The TCX document for one session. The sport is {@code Other}: the TCX v2
+     * schema only allows Running, Biking, and Other, and a made-up value such
+     * as "Walking" fails validation in strict importers. Services show it as a
+     * generic workout that can be relabelled as a walk after import.
+     */
+    static String buildTcx(SessionData session) {
         Instant start = Instant.ofEpochMilli(session.createdMillis);
         // String.format with Locale.ROOT, not "...".formatted(...): the latter
         // uses the default locale, and %d renders Eastern Arabic digits under
         // ar/fa/bn, which no fitness service will parse as XML numbers.
-        String tcx = String.format(Locale.ROOT, """
+        return String.format(Locale.ROOT, """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
                   <Activities>
-                    <Activity Sport="Walking">
+                    <Activity Sport="Other">
                       <Id>%s</Id>
                       <Lap StartTime="%s">
                         <TotalTimeSeconds>%d</TotalTimeSeconds>
@@ -159,7 +170,6 @@ public final class SessionTransfer {
                 Math.max(0, Math.round(session.calories)),
                 buildTrackpoints(session, start),
                 xmlEscape(session.name));
-        writeFile(project, wrapper, tcx, 1);
     }
 
     /**
@@ -218,8 +228,8 @@ public final class SessionTransfer {
     public static int importCsv(@Nullable Project project, TreadmillSettings settings) {
         VirtualFile file = FileChooser.chooseFile(
                 FileChooserDescriptorFactory.createSingleFileDescriptor("csv")
-                        .withTitle("Import Treadmill Sessions")
-                        .withDescription("Pick a CSV file previously exported by Treadmill Buddy"),
+                        .withTitle(TreadmillBundle.message("transfer.import.title"))
+                        .withDescription(TreadmillBundle.message("transfer.import.csv.description")),
                 project, null);
         if (file == null) {
             return -1;
@@ -228,7 +238,9 @@ public final class SessionTransfer {
         try {
             lines = Files.readAllLines(file.toNioPath());
         } catch (IOException exception) {
-            Messages.showErrorDialog(project, "Could not read CSV file: " + exception.getMessage(), "Import Sessions");
+            Messages.showErrorDialog(project,
+                    TreadmillBundle.message("transfer.import.csv.error", String.valueOf(exception.getMessage())),
+                    TreadmillBundle.message("transfer.import.errorTitle"));
             return -1;
         }
         if (lines.isEmpty()) {
@@ -274,8 +286,8 @@ public final class SessionTransfer {
     public static int importJson(@Nullable Project project, TreadmillSettings settings) {
         VirtualFile file = FileChooser.chooseFile(
                 FileChooserDescriptorFactory.createSingleFileDescriptor("json")
-                        .withTitle("Import Treadmill Sessions")
-                        .withDescription("Pick a JSON file previously exported by Treadmill Buddy"),
+                        .withTitle(TreadmillBundle.message("transfer.import.title"))
+                        .withDescription(TreadmillBundle.message("transfer.import.json.description")),
                 project, null);
         if (file == null) {
             return -1;
@@ -286,7 +298,9 @@ public final class SessionTransfer {
             }.getType();
             imported = new Gson().fromJson(Files.readString(file.toNioPath()), listType);
         } catch (IOException | JsonSyntaxException exception) {
-            Messages.showErrorDialog(project, "Could not read JSON file: " + exception.getMessage(), "Import Sessions");
+            Messages.showErrorDialog(project,
+                    TreadmillBundle.message("transfer.import.json.error", String.valueOf(exception.getMessage())),
+                    TreadmillBundle.message("transfer.import.errorTitle"));
             return -1;
         }
         if (imported == null) {
@@ -300,17 +314,14 @@ public final class SessionTransfer {
         }
         List<SessionData> toImport = new ArrayList<>();
         for (SessionData session : imported) {
-            if (session == null || session.id == null || session.id.isBlank()
-                    || existingIds.contains(session.id) || existingKeys.contains(dedupeKey(session))) {
+            if (session == null || session.id == null || session.id.isBlank()) {
                 continue;
             }
-            if (session.segments == null) {
-                session.segments = new ArrayList<>();
-            }
-            if (session.name == null) {
-                // A hand-edited file can carry a null name, which would later
-                // blow up CSV export for the whole history.
-                session.name = "";
+            // A hand-edited file can carry explicit nulls; the store repairs
+            // the same way when it reads its own file.
+            session.sanitize();
+            if (existingIds.contains(session.id) || existingKeys.contains(dedupeKey(session))) {
+                continue;
             }
             existingIds.add(session.id);
             existingKeys.add(dedupeKey(session));
@@ -479,7 +490,9 @@ public final class SessionTransfer {
                     TreadmillBundle.message("notification.title"),
                     TreadmillBundle.message("notification.export.done", count, wrapper.getFile().getName()));
         } catch (IOException exception) {
-            Messages.showErrorDialog(project, "Could not write file: " + exception.getMessage(), "Treadmill Buddy");
+            Messages.showErrorDialog(project,
+                    TreadmillBundle.message("transfer.write.error", String.valueOf(exception.getMessage())),
+                    TreadmillBundle.message("notification.title"));
         }
     }
 

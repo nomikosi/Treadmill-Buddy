@@ -17,8 +17,21 @@ import javax.swing.JList;
 import javax.swing.JPanel;
 import java.awt.BorderLayout;
 import java.awt.Component;
+import java.util.function.DoubleUnaryOperator;
 
+/**
+ * The profile and defaults form shared by the Settings page and the first-run
+ * dialog. Both read it through {@link #setValues} and write it back through
+ * {@link #applyTo}, so neither can silently drop a field the other saves.
+ */
 public final class ProfilePanel {
+    /**
+     * Fields show one decimal, so a displayed value is within this much of
+     * the exact conversion of the stored metric value. A field that still
+     * shows what it was populated with counts as untouched.
+     */
+    static final double DISPLAY_TOLERANCE = 0.05 + 1e-9;
+
     private final ComboBox<UnitSystem> unitsCombo = new ComboBox<>(UnitSystem.values());
     private final JBTextField weightField = new JBTextField();
     private final JBTextField heightField = new JBTextField();
@@ -39,6 +52,19 @@ public final class ProfilePanel {
 
     /** Units currently reflected by the field texts, so a combo switch can convert them. */
     private UnitSystem fieldUnits = UnitSystem.METRIC;
+    /**
+     * The stored metric values the fields were populated from. An untouched
+     * field hands these back exactly instead of re-converting its rounded
+     * text - "154.3 lb" converted back is 69.99 kg, which used to flag the
+     * page as modified the moment it opened in imperial mode and nudge the
+     * stored weight on every OK.
+     */
+    private double baselineWeightKg;
+    private double baselineHeightCm;
+    private GoalType baselineDailyGoalType = GoalType.NONE;
+    private double baselineDailyGoalValue;
+    private GoalType baselineWeeklyGoalType = GoalType.NONE;
+    private double baselineWeeklyGoalValue;
 
     public ProfilePanel() {
         ComboHelp.configureAlgorithmCombo(algorithmCombo, this::getAlgorithm);
@@ -87,40 +113,80 @@ public final class ProfilePanel {
         };
     }
 
-    public void setValues(UserProfile profile, CalorieAlgorithm algorithm) {
-        TreadmillSettings settings = TreadmillSettings.getInstance();
+    /** Populates every field from the settings and remembers them as the untouched baseline. */
+    public void setValues(TreadmillSettings settings) {
+        UserProfile profile = settings.getProfile();
+        baselineWeightKg = profile.weightKg;
+        baselineHeightCm = profile.heightCm;
+        baselineDailyGoalType = settings.getDailyGoalType();
+        baselineDailyGoalValue = settings.getDailyGoalValue();
+        baselineWeeklyGoalType = settings.getWeeklyGoalType();
+        baselineWeeklyGoalValue = settings.getWeeklyGoalValue();
+
         fieldUnits = settings.getUnitSystem();
         unitsCombo.setSelectedItem(fieldUnits);
         weightField.setText(format(fieldUnits.weightFromKg(profile.weightKg)));
         heightField.setText(format(fieldUnits.heightFromCm(profile.heightCm)));
-        algorithmCombo.setSelectedItem(algorithm);
+        algorithmCombo.setSelectedItem(settings.getSelectedAlgorithm());
         autoPauseField.setText(String.valueOf(settings.getAutoPauseMinutes()));
         moveReminderField.setText(String.valueOf(settings.getMoveReminderMinutes()));
-        GoalType goalType = settings.getDailyGoalType();
-        goalTypeCombo.setSelectedItem(goalType);
-        double goalValue = settings.getDailyGoalValue();
-        goalValueField.setText(goalValue > 0
-                ? format(goalType == GoalType.DISTANCE ? fieldUnits.distanceFromKm(goalValue) : goalValue)
-                : "");
-        GoalType weeklyType = settings.getWeeklyGoalType();
-        weeklyGoalTypeCombo.setSelectedItem(weeklyType);
-        double weeklyValue = settings.getWeeklyGoalValue();
-        weeklyGoalValueField.setText(weeklyValue > 0
-                ? format(weeklyType == GoalType.DISTANCE ? fieldUnits.distanceFromKm(weeklyValue) : weeklyValue)
-                : "");
+        goalTypeCombo.setSelectedItem(baselineDailyGoalType);
+        goalValueField.setText(goalText(baselineDailyGoalType, baselineDailyGoalValue));
+        weeklyGoalTypeCombo.setSelectedItem(baselineWeeklyGoalType);
+        weeklyGoalValueField.setText(goalText(baselineWeeklyGoalType, baselineWeeklyGoalValue));
         streakRestDaysField.setText(String.valueOf(settings.getStreakRestDaysPerWeek()));
         streakRiskHourField.setText(String.valueOf(settings.getStreakRiskHour()));
         updateUnitLabels();
         goalTypeChanged();
     }
 
+    private String goalText(GoalType type, double metricValue) {
+        if (metricValue <= 0) {
+            return "";
+        }
+        return format(type == GoalType.DISTANCE ? fieldUnits.distanceFromKm(metricValue) : metricValue);
+    }
+
+    /**
+     * Writes every field into the settings. The one place that knows the full
+     * list, so the first-run dialog and the Settings page cannot drift apart.
+     * Callers validate first via {@link #validateInput}.
+     */
+    public void applyTo(TreadmillSettings settings) {
+        settings.setProfile(getProfile());
+        settings.setSelectedAlgorithm(getAlgorithm());
+        settings.setAutoPauseMinutes(getAutoPauseMinutes());
+        settings.setMoveReminderMinutes(getMoveReminderMinutes());
+        settings.setUnitSystem(getUnitSystem());
+        settings.setDailyGoalType(getDailyGoalType());
+        settings.setDailyGoalValue(getDailyGoalValueMetric());
+        settings.setWeeklyGoalType(getWeeklyGoalType());
+        settings.setWeeklyGoalValue(getWeeklyGoalValueMetric());
+        settings.setStreakRestDaysPerWeek(getStreakRestDaysPerWeek());
+        settings.setStreakRiskHour(getStreakRiskHour());
+    }
+
     public UserProfile getProfile() {
         UnitSystem units = getUnitSystem();
         UserProfile profile = new UserProfile();
-        profile.weightKg = units.weightToKg(parseDouble(weightField.getText()));
-        profile.heightCm = units.heightToCm(parseDouble(heightField.getText()));
+        profile.weightKg = resolveMetric(weightField.getText(), baselineWeightKg, units::weightFromKg, units::weightToKg);
+        profile.heightCm = resolveMetric(heightField.getText(), baselineHeightCm, units::heightFromCm, units::heightToCm);
         profile.completed = true;
         return profile;
+    }
+
+    /**
+     * The metric value a field stands for: the baseline when the text still
+     * shows the baseline's (rounded) display value, the converted text
+     * otherwise. Package-visible for tests.
+     */
+    static double resolveMetric(
+            String text, double baselineMetric, DoubleUnaryOperator fromMetric, DoubleUnaryOperator toMetric) {
+        double display = parseDouble(text);
+        if (baselineMetric > 0 && Math.abs(display - fromMetric.applyAsDouble(baselineMetric)) <= DISPLAY_TOLERANCE) {
+            return baselineMetric;
+        }
+        return toMetric.applyAsDouble(display);
     }
 
     public CalorieAlgorithm getAlgorithm() {
@@ -140,15 +206,8 @@ public final class ProfilePanel {
 
     /** Goal value converted to metric terms (steps, km, or kcal). */
     public double getDailyGoalValueMetric() {
-        GoalType type = getDailyGoalType();
-        if (type == GoalType.NONE) {
-            return 0.0;
-        }
-        double value = parseDouble(goalValueField.getText());
-        if (value <= 0) {
-            return 0.0;
-        }
-        return type == GoalType.DISTANCE ? getUnitSystem().distanceToKm(value) : value;
+        return goalValueMetric(getDailyGoalType(), goalValueField.getText(),
+                baselineDailyGoalType, baselineDailyGoalValue);
     }
 
     public GoalType getWeeklyGoalType() {
@@ -158,15 +217,26 @@ public final class ProfilePanel {
 
     /** Weekly goal value converted to metric terms (steps, km, or kcal). */
     public double getWeeklyGoalValueMetric() {
-        GoalType type = getWeeklyGoalType();
+        return goalValueMetric(getWeeklyGoalType(), weeklyGoalValueField.getText(),
+                baselineWeeklyGoalType, baselineWeeklyGoalValue);
+    }
+
+    private double goalValueMetric(GoalType type, String text, GoalType baselineType, double baselineValue) {
         if (type == GoalType.NONE) {
             return 0.0;
         }
-        double value = parseDouble(weeklyGoalValueField.getText());
+        double value = parseDouble(text);
         if (value <= 0) {
             return 0.0;
         }
-        return type == GoalType.DISTANCE ? getUnitSystem().distanceToKm(value) : value;
+        if (type != GoalType.DISTANCE) {
+            return value;
+        }
+        UnitSystem units = getUnitSystem();
+        // Only a distance goal is unit-converted, so only it can suffer the
+        // rounding round trip; steps and kcal are stored as typed.
+        double baseline = baselineType == GoalType.DISTANCE ? baselineValue : 0.0;
+        return resolveMetric(text, baseline, units::distanceFromKm, units::distanceToKm);
     }
 
     public int getStreakRestDaysPerWeek() {
@@ -258,11 +328,7 @@ public final class ProfilePanel {
         updateUnitLabels();
     }
 
-    private static void convertField(
-            JBTextField field,
-            java.util.function.DoubleUnaryOperator toMetric,
-            java.util.function.DoubleUnaryOperator fromMetric
-    ) {
+    private static void convertField(JBTextField field, DoubleUnaryOperator toMetric, DoubleUnaryOperator fromMetric) {
         double value = parseDouble(field.getText());
         if (value > 0) {
             field.setText(format(fromMetric.applyAsDouble(toMetric.applyAsDouble(value))));
@@ -288,11 +354,10 @@ public final class ProfilePanel {
     }
 
     private String goalUnitSuffix(GoalType type) {
-        UnitSystem units = getUnitSystem();
         return switch (type) {
-            case STEPS -> " (steps)";
-            case DISTANCE -> " (" + units.distanceUnit() + ")";
-            case CALORIES -> " (kcal)";
+            case STEPS -> TreadmillBundle.message("settings.goalUnit.steps");
+            case DISTANCE -> TreadmillBundle.message("settings.goalUnit.distance", getUnitSystem().distanceUnit());
+            case CALORIES -> TreadmillBundle.message("settings.goalUnit.kcal");
             case NONE -> "";
         };
     }

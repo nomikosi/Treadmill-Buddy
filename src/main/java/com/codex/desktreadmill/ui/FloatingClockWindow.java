@@ -8,6 +8,7 @@ import com.intellij.ui.JBColor;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.util.ui.JBUI;
 
+import javax.swing.AbstractButton;
 import javax.swing.JButton;
 import javax.swing.JDialog;
 import javax.swing.JPanel;
@@ -16,6 +17,7 @@ import javax.swing.SwingConstants;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
+import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Frame;
 import java.awt.GraphicsDevice;
@@ -45,7 +47,24 @@ public final class FloatingClockWindow {
         dialog.pack();
     }
 
+    /** Opens the clock on the user's request, which also re-arms the automatic opening. */
     public void showWindow() {
+        settings.setFloatingClockAutoShow(true);
+        showNow();
+    }
+
+    /**
+     * Opens the clock because a session started - unless the user closed it
+     * earlier, in which case it stays out of the way until they ask for it
+     * with the Float Clock button again.
+     */
+    public void showIfWanted() {
+        if (settings.isFloatingClockAutoShow()) {
+            showNow();
+        }
+    }
+
+    private void showNow() {
         if (dialog.isVisible()) {
             dialog.toFront();
             return;
@@ -57,6 +76,11 @@ public final class FloatingClockWindow {
             dialog.setLocationRelativeTo(dialog.getOwner());
         }
         dialog.setVisible(true);
+    }
+
+    private void closeByUser() {
+        settings.setFloatingClockAutoShow(false);
+        dialog.setVisible(false);
     }
 
     public void setDisplay(String dayPrefix, String timeText) {
@@ -94,11 +118,15 @@ public final class FloatingClockWindow {
         title.setHorizontalAlignment(SwingConstants.LEFT);
         JButton close = new JButton("x");
         close.setFocusable(false);
-        close.addActionListener(event -> dialog.setVisible(false));
+        close.addActionListener(event -> closeByUser());
         pauseResumeButton.setFocusable(false);
         saveButton.setFocusable(false);
         pauseResumeButton.addActionListener(event -> pauseResumeAction.run());
         saveButton.addActionListener(event -> saveAction.run());
+        reserveWidestLabel(pauseResumeButton,
+                TreadmillBundle.message("button.start"),
+                TreadmillBundle.message("button.pause"),
+                TreadmillBundle.message("button.resume"));
 
         JToggleButton pinButton = new JToggleButton();
         pinButton.setFocusable(false);
@@ -115,6 +143,9 @@ public final class FloatingClockWindow {
             updatePinButton(pinButton);
         });
         updatePinButton(pinButton);
+        reserveWidestLabel(pinButton,
+                TreadmillBundle.message("floating.pinned"),
+                TreadmillBundle.message("floating.unpinned"));
 
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
         actions.add(pauseResumeButton);
@@ -130,6 +161,25 @@ public final class FloatingClockWindow {
         content.add(titleBar, BorderLayout.NORTH);
         content.add(display, BorderLayout.CENTER);
         return content;
+    }
+
+    /**
+     * The dialog is packed once, while the button shows its initial label. A
+     * later, longer label ("Resume" after "Start") would be clipped, so size
+     * the button for the widest text it will ever show.
+     */
+    private static void reserveWidestLabel(AbstractButton button, String... labels) {
+        String current = button.getText();
+        int width = 0;
+        int height = 0;
+        for (String label : labels) {
+            button.setText(label);
+            Dimension size = button.getPreferredSize();
+            width = Math.max(width, size.width);
+            height = Math.max(height, size.height);
+        }
+        button.setText(current);
+        button.setPreferredSize(new Dimension(width, height));
     }
 
     private static void updatePinButton(JToggleButton pinButton) {

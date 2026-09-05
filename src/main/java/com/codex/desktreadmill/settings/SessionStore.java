@@ -16,6 +16,7 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -25,11 +26,16 @@ import java.util.Set;
  * {@code ~/.treadmill-buddy/sessions.json} instead of per-IDE settings, so a
  * walk logged in IntelliJ also counts in Rider and survives IDE reinstalls.
  *
- * <p>Writes are atomic (temp file + move). Before a write, sessions another
- * IDE added since our last read are merged in by id - but only when the file
- * actually changed on disk (checked by modification time and size), so the
- * routine 30-second autosave doesn't re-read and re-parse the whole history
- * on the EDT every time. Ids deleted here stay deleted.</p>
+ * <p>Writes are atomic (uniquely named temp file + move, so two IDEs saving at
+ * the same moment never share a temp file). Before a write, the file is
+ * re-read when another IDE changed it since our last sync (checked by
+ * modification time and size, so the routine 30-second autosave doesn't
+ * re-parse the whole history on the EDT every time) and merged in by id: the
+ * disk copy wins for every session except the ones being saved right now, so
+ * a session resumed and extended in a second IDE keeps its newer state here
+ * instead of being reverted to a stale copy. Ids deleted here stay deleted
+ * for the life of this store; a delete made in another IDE is not propagated
+ * (there are no tombstones in the file), which is a known limitation.</p>
  *
  * <p>Write failures are remembered and reported through the optional
  * {@link #onWriteFailure} callback, because a store that silently keeps
@@ -79,7 +85,7 @@ public final class SessionStore {
     public synchronized void saveSession(SessionData session) {
         ensureLoaded();
         putInMemory(session);
-        write();
+        write(Collections.singleton(session.id));
     }
 
     /**
@@ -91,10 +97,12 @@ public final class SessionStore {
             return;
         }
         ensureLoaded();
+        Set<String> saving = new HashSet<>();
         for (SessionData session : toSave) {
             putInMemory(session);
+            saving.add(session.id);
         }
-        write();
+        write(saving);
     }
 
     private void putInMemory(SessionData session) {
@@ -115,7 +123,7 @@ public final class SessionStore {
             sessions.remove(index);
         }
         deletedIds.add(id);
-        write();
+        write(Set.of());
     }
 
     /** Bulk delete with a single file write (used by "delete older than" cleanup). */
@@ -126,19 +134,25 @@ public final class SessionStore {
         ensureLoaded();
         sessions.removeIf(session -> ids.contains(session.id));
         deletedIds.addAll(ids);
-        write();
+        write(Set.of());
     }
 
     /**
-     * Merges sessions another IDE instance wrote since our last read. In-memory
-     * sessions win on id conflicts (ours may include an in-flight workout);
-     * ids deleted here stay deleted.
+     * Picks up what another IDE instance wrote since our last sync: new
+     * sessions are added and sessions we already know are refreshed from the
+     * file. Cheap when nothing changed - the file is only re-read when its
+     * modification time or size moved, which matters because this runs on
+     * every IDE focus change. Returns whether anything was picked up.
      */
-    public synchronized void reload() {
+    public synchronized boolean reload() {
         if (!loaded) {
-            return; // Nothing cached; the next access reads the file fresh anyway.
+            return false; // Nothing cached; the next access reads the file fresh anyway.
         }
-        mergeFromDisk();
+        if (!diskChangedSinceLastSync()) {
+            return false;
+        }
+        mergeFromDisk(Set.of());
+        return true;
     }
 
     /**
@@ -149,14 +163,14 @@ public final class SessionStore {
      */
     public synchronized boolean migrate(List<SessionData> legacySessions) {
         ensureLoaded();
-        boolean added = false;
+        Set<String> added = new HashSet<>();
         for (SessionData session : legacySessions) {
             if (session.id != null && !session.id.isBlank() && indexOf(session.id) < 0) {
                 sessions.add(session.copy());
-                added = true;
+                added.add(session.id);
             }
         }
-        return !added || write();
+        return added.isEmpty() || write(added);
     }
 
     private int indexOf(String id) {
@@ -177,9 +191,23 @@ public final class SessionStore {
         rememberDiskState();
     }
 
-    private void mergeFromDisk() {
+    /**
+     * Folds the file into memory. The disk copy replaces ours for every id
+     * except {@code keepLocal} (the sessions being saved in this very call,
+     * which are by definition newer than anything on disk) and ids deleted
+     * here. Sessions missing from the file are kept: a truncated or corrupt
+     * file reads as empty, and dropping everything on that signal would turn
+     * one bad read into a wiped history on the next write.
+     */
+    private void mergeFromDisk(Set<String> keepLocal) {
         for (SessionData onDisk : readFile()) {
-            if (indexOf(onDisk.id) < 0 && !deletedIds.contains(onDisk.id)) {
+            if (deletedIds.contains(onDisk.id) || keepLocal.contains(onDisk.id)) {
+                continue;
+            }
+            int index = indexOf(onDisk.id);
+            if (index >= 0) {
+                sessions.set(index, onDisk);
+            } else {
                 sessions.add(onDisk);
             }
         }
@@ -221,10 +249,7 @@ public final class SessionStore {
             List<SessionData> valid = new ArrayList<>();
             for (SessionData session : read) {
                 if (session != null && session.id != null && !session.id.isBlank()) {
-                    if (session.segments == null) {
-                        session.segments = new ArrayList<>();
-                    }
-                    valid.add(session);
+                    valid.add(session.sanitize());
                 }
             }
             return valid;
@@ -236,21 +261,25 @@ public final class SessionStore {
         }
     }
 
-    private boolean write() {
-        // Merge sessions another IDE instance wrote since we last synced -
-        // but only when the file actually changed, so the routine autosave
-        // isn't a full read-parse of the history every 30 seconds.
+    private boolean write(Set<String> keepLocal) {
+        // Merge what another IDE instance wrote since we last synced - but
+        // only when the file actually changed, so the routine autosave isn't
+        // a full read-parse of the history every 30 seconds.
         if (diskChangedSinceLastSync()) {
-            mergeFromDisk();
+            mergeFromDisk(keepLocal);
         }
         try {
             Files.createDirectories(file.getParent());
-            Path temp = file.resolveSibling(file.getFileName() + ".tmp");
-            Files.writeString(temp, gson.toJson(sessions));
+            // Per-process, per-write temp name: two IDEs sharing one
+            // "sessions.json.tmp" would overwrite each other's staging file
+            // and one of the moves would fail or install the other's content.
+            Path temp = file.resolveSibling(file.getFileName() + "."
+                    + ProcessHandle.current().pid() + "-" + Long.toUnsignedString(System.nanoTime(), 36) + ".tmp");
             try {
-                Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            } catch (IOException atomicUnsupported) {
-                Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+                Files.writeString(temp, gson.toJson(sessions));
+                moveIntoPlace(temp);
+            } finally {
+                discardQuietly(temp);
             }
             rememberDiskState();
             return true;
@@ -264,6 +293,23 @@ public final class SessionStore {
                 writeFailureCallback.run();
             }
             return false;
+        }
+    }
+
+    private void moveIntoPlace(Path temp) throws IOException {
+        try {
+            Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException atomicUnsupported) {
+            Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    /** Removes a staging file that a failed write left behind; a no-op after a successful move. */
+    private static void discardQuietly(Path temp) {
+        try {
+            Files.deleteIfExists(temp);
+        } catch (IOException ignored) {
+            // The original failure is what gets reported; a stray temp file is harmless.
         }
     }
 }

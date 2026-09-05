@@ -64,23 +64,6 @@ public final class SessionStats {
         return daily;
     }
 
-    /**
-     * Consecutive walking days ending today. A quiet today doesn't break the
-     * streak (the day isn't over yet); the count then starts from yesterday.
-     */
-    public static int streakDays(double[] dailyDistanceKm) {
-        int last = dailyDistanceKm.length - 1;
-        if (last < 0) {
-            return 0;
-        }
-        int start = dailyDistanceKm[last] > 0 ? last : last - 1;
-        int streak = 0;
-        for (int i = start; i >= 0 && dailyDistanceKm[i] > 0; i--) {
-            streak++;
-        }
-        return streak;
-    }
-
     /** Distance walked per day keyed by epoch day, across the full history. */
     public static Map<Long, Double> distanceByEpochDay(List<SessionData> sessions, ZoneId zone) {
         Map<Long, Double> byDay = new HashMap<>();

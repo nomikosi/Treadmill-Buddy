@@ -1,5 +1,6 @@
 package com.codex.desktreadmill.ui;
 
+import com.codex.desktreadmill.TreadmillBundle;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.Disposer;
 import com.intellij.openapi.wm.StatusBar;
@@ -16,7 +17,7 @@ public final class TreadmillStatusBarWidgetFactory implements StatusBarWidgetFac
 
     @Override
     public @Nls @NotNull String getDisplayName() {
-        return "Treadmill Buddy";
+        return TreadmillBundle.message("widget.display.name");
     }
 
     @Override

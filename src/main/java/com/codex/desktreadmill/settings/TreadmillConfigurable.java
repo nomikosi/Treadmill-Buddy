@@ -1,5 +1,6 @@
 package com.codex.desktreadmill.settings;
 
+import com.codex.desktreadmill.TreadmillBundle;
 import com.codex.desktreadmill.engine.WorkoutEngine;
 import com.intellij.openapi.options.Configurable;
 import com.intellij.openapi.options.ConfigurationException;
@@ -13,7 +14,7 @@ public final class TreadmillConfigurable implements Configurable {
 
     @Override
     public @Nls String getDisplayName() {
-        return "Treadmill Buddy";
+        return TreadmillBundle.message("settings.displayName");
     }
 
     @Override
@@ -40,18 +41,7 @@ public final class TreadmillConfigurable implements Configurable {
         if (validation != null) {
             throw new ConfigurationException(validation);
         }
-        TreadmillSettings settings = TreadmillSettings.getInstance();
-        settings.setProfile(profilePanel.getProfile());
-        settings.setSelectedAlgorithm(profilePanel.getAlgorithm());
-        settings.setAutoPauseMinutes(profilePanel.getAutoPauseMinutes());
-        settings.setMoveReminderMinutes(profilePanel.getMoveReminderMinutes());
-        settings.setUnitSystem(profilePanel.getUnitSystem());
-        settings.setDailyGoalType(profilePanel.getDailyGoalType());
-        settings.setDailyGoalValue(profilePanel.getDailyGoalValueMetric());
-        settings.setWeeklyGoalType(profilePanel.getWeeklyGoalType());
-        settings.setWeeklyGoalValue(profilePanel.getWeeklyGoalValueMetric());
-        settings.setStreakRestDaysPerWeek(profilePanel.getStreakRestDaysPerWeek());
-        settings.setStreakRiskHour(profilePanel.getStreakRiskHour());
+        profilePanel.applyTo(TreadmillSettings.getInstance());
         WorkoutEngine.getInstance().refreshListeners();
     }
 
@@ -60,8 +50,7 @@ public final class TreadmillConfigurable implements Configurable {
         if (profilePanel == null) {
             return;
         }
-        TreadmillSettings settings = TreadmillSettings.getInstance();
-        profilePanel.setValues(settings.getProfile(), settings.getSelectedAlgorithm());
+        profilePanel.setValues(TreadmillSettings.getInstance());
     }
 
     @Override

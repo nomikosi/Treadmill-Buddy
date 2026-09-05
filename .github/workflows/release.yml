@@ -31,6 +31,19 @@ jobs:
       - name: Build and test
         run: ./gradlew build
 
+      # The Marketplace runs the verifier after upload and can reject the
+      # build then; catching a compatibility problem here keeps a broken
+      # version from ever being published.
+      - name: Run IntelliJ Plugin Verifier
+        run: ./gradlew verifyPlugin
+
+      - name: Upload verifier reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: plugin-verifier-reports
+          path: build/reports/pluginVerifier
+
       - name: Publish plugin
         env:
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
@@ -39,7 +52,9 @@ jobs:
           PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
         run: ./gradlew publishPlugin
 
-      - name: Upload distribution to the GitHub release
+      # A workflow artifact, downloadable from the run page - this workflow
+      # does not create a GitHub release.
+      - name: Upload plugin distribution as a workflow artifact
         uses: actions/upload-artifact@v7
         with:
           name: plugin-distribution

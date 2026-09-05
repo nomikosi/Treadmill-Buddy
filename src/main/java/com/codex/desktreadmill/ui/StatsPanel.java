@@ -101,7 +101,7 @@ public final class StatsPanel extends JPanel {
         heatmap.setVisible(visibleWalkingDays >= 5);
 
         int streak = SessionStats.streakDays(sessions, todayDate, zone, settings.getStreakRestDaysPerWeek());
-        String streakText = streak > 1 ? "   |   Streak " + streak + " days" : "";
+        String streakText = streak > 1 ? SEPARATOR + TreadmillBundle.message("stats.streak", streak) : "";
         // Late in the day with no walking yet, a live streak is one quiet
         // evening away from resetting - worth a nudge.
         int riskHour = settings.getStreakRiskHour();
@@ -109,13 +109,10 @@ public final class StatsPanel extends JPanel {
             streakText += TreadmillBundle.message("panel.streak.atRisk");
         }
         String unit = currentUnits.distanceUnit();
-        statsLabel.setText(String.format(
-                "Today %.1f %s · %.0f kcal   |   7 days %.1f %s · %.0f kcal   |   All time %.1f %s · %.0f kcal%s",
-                currentUnits.distanceFromKm(today.distanceKm), unit, today.calories,
-                currentUnits.distanceFromKm(week.distanceKm), unit, week.calories,
-                currentUnits.distanceFromKm(allTime.distanceKm), unit, allTime.calories,
-                streakText
-        ));
+        statsLabel.setText(TreadmillBundle.message("stats.today", distance(today, currentUnits), unit, kcal(today))
+                + SEPARATOR + TreadmillBundle.message("stats.week", distance(week, currentUnits), unit, kcal(week))
+                + SEPARATOR + TreadmillBundle.message("stats.allTime", distance(allTime, currentUnits), unit, kcal(allTime))
+                + streakText);
 
         applyGoalProgress(goalProgressBar, TreadmillBundle.message("panel.goal.daily"),
                 settings.getDailyGoalType(), settings.getDailyGoalValue(), today, currentUnits);
@@ -133,20 +130,27 @@ public final class StatsPanel extends JPanel {
         }
 
         SessionStats.Records records = SessionStats.records(sessions, zone);
-        StringBuilder tooltip = new StringBuilder(String.format(
-                "Today: %,d steps in %d sessions | Last 7 days: %,d steps in %d sessions | All time: %,d steps in %d sessions",
-                today.steps, today.sessionCount,
-                week.steps, week.sessionCount,
-                allTime.steps, allTime.sessionCount
-        ));
+        StringBuilder tooltip = new StringBuilder(
+                TreadmillBundle.message("stats.tooltip.today", today.steps, today.sessionCount)
+                        + " | " + TreadmillBundle.message("stats.tooltip.week", week.steps, week.sessionCount)
+                        + " | " + TreadmillBundle.message("stats.tooltip.allTime", allTime.steps, allTime.sessionCount));
         if (records.longestSessionSeconds > 0) {
-            tooltip.append(String.format(
-                    " | Records: longest session %s, best day %.1f %s and %,d steps",
+            tooltip.append(" | ").append(TreadmillBundle.message("stats.tooltip.records",
                     TimeFormatter.displayTime(records.longestSessionSeconds).getTimeText(),
-                    currentUnits.distanceFromKm(records.bestDayDistanceKm), unit,
+                    String.format("%.1f", currentUnits.distanceFromKm(records.bestDayDistanceKm)), unit,
                     records.bestDaySteps));
         }
         statsLabel.setToolTipText(tooltip.toString());
+    }
+
+    private static final String SEPARATOR = "   |   ";
+
+    private static String distance(SessionStats.Totals totals, UnitSystem units) {
+        return String.format("%.1f", units.distanceFromKm(totals.distanceKm));
+    }
+
+    private static String kcal(SessionStats.Totals totals) {
+        return String.format("%.0f", totals.calories);
     }
 
     private static void applyGoalProgress(

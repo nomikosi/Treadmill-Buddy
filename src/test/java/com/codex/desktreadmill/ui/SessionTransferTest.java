@@ -276,4 +276,16 @@ class SessionTransferTest {
         }
         assertEquals(List.of(0.0, 60.0, 120.0), distances);
     }
+
+    @Test
+    void tcxUsesASchemaValidSportAndEscapesTheName() {
+        SessionData session = sampleSession();
+        session.name = "Lunch <walk> & talk";
+        String tcx = SessionTransfer.buildTcx(session);
+        // The TCX v2 schema only allows Running, Biking, and Other; "Walking"
+        // is rejected by strict importers.
+        assertTrue(tcx.contains("<Activity Sport=\"Other\">"), tcx);
+        assertTrue(tcx.contains("<Notes>Lunch &lt;walk&gt; &amp; talk</Notes>"), tcx);
+        assertTrue(tcx.contains("<TotalTimeSeconds>1800</TotalTimeSeconds>"), tcx);
+    }
 }

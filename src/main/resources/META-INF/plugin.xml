@@ -20,21 +20,36 @@ limitations under the License.
     <name>Treadmill Buddy</name>
     <vendor email="hello@nomikosi.dev" url="https://github.com/nomikosi/Treadmill-Buddy">Nomikosi Consulting</vendor>
 
+    <!-- The single source of the Marketplace description; build.gradle no longer overrides it. -->
     <description><![CDATA[
         <p><b>Treadmill Buddy</b> is a digital stopwatch for developers who walk while they code.</p>
-        <p>Track under-desk treadmill sessions from inside IntelliJ IDEA with a large digital clock, floating movable clock, saved sessions, distance, steps, calories, and goal countdowns.</p>
+        <p>Track under-desk treadmill sessions from inside any JetBrains IDE with a large digital clock, a status bar widget, a floating movable clock, saved sessions, distance, steps, calories, and goal countdowns.</p>
         <ul>
             <li><b>Marathon:</b> open-ended count-up sessions.</li>
             <li><b>Calorie burn:</b> count down from the time needed to burn a calorie target.</li>
             <li><b>KG burn:</b> count down from the time needed to burn a target mass in kg.</li>
             <li><b>Interval walk:</b> alternating walk/break blocks with a chime at each switch.</li>
         </ul>
-        <p>The plugin includes selectable calorie algorithms, a Settings page for profile/defaults, live speed recalculation, live calorie-algorithm recalculation, saved session deletion, and configurable auto-pause after keyboard inactivity.</p>
+        <p>The plugin includes metric and imperial units, selectable calorie algorithms with incline support, optional daily and weekly goals with progress tracking, speed presets, per-speed session breakdowns, personal records, a Settings page for profile/defaults, live speed and incline recalculation, cross-IDE session history with CSV/JSON/TCX export and CSV/JSON import, daily/weekly/all-time totals with a 14-day chart, a six-month activity heatmap, streaks with configurable rest days, move reminders, and configurable auto-pause after inactivity.</p>
         <p>License: Apache License 2.0</p>
     ]]></description>
 
     <change-notes><![CDATA[
         <ul>
+            <li>1.1.1:
+                <ul>
+                    <li>Walking time is no longer lost when a running session is replaced: New, a mode switch, or loading another session now saves the current walk first.</li>
+                    <li>Cross-IDE history sync keeps the newer copy of a session that was resumed in another IDE, refreshes it on focus, and no longer overwrites it on shutdown; concurrent saves from two IDEs use separate temp files.</li>
+                    <li>The first-run profile dialog now saves the weekly goal, rest days, and streak-risk hour it shows.</li>
+                    <li>The Settings page no longer reports unsaved changes in imperial mode just from opening it, and no longer nudges the stored weight and height on every OK.</li>
+                    <li>The session-complete notification uses your display units instead of always saying km.</li>
+                    <li>Reset asks for confirmation on a session with walked time and can be undone from the notification.</li>
+                    <li>The floating clock stays closed once you dismiss it; the Float Clock button brings it back and re-enables the automatic opening.</li>
+                    <li>TCX export writes a schema-valid sport value so strict importers accept the file.</li>
+                    <li>Imports and Undo no longer change which session the clock opens with after a restart; a stray Shift or Ctrl press no longer resumes an auto-paused session; a hand-edited history file with null fields no longer breaks export or the list.</li>
+                    <li>Since 1.1.0: the trash icon deletes the highlighted session (undoable) and bulk cleanup moved to the history icon; balloons close by themselves; personal-record and countdown-clock fixes for re-imported sessions; lossless CSV round trip; safer history migration that keeps the old copy until the new store confirms the write; a warning when the history file cannot be written.</li>
+                </ul>
+            </li>
             <li>1.1.0:
                 <ul>
                     <li>New <b>Interval walk</b> mode: alternating walk/break blocks (e.g. 25/5 minutes) with a chime and notification at each switch.</li>

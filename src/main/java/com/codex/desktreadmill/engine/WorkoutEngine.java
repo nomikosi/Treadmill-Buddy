@@ -2,16 +2,19 @@ package com.codex.desktreadmill.engine;
 
 import com.codex.desktreadmill.TreadmillBundle;
 import com.codex.desktreadmill.TreadmillNotifications;
+import com.codex.desktreadmill.TreadmillToolWindowFactory;
 import com.codex.desktreadmill.calories.CalorieAlgorithm;
 import com.codex.desktreadmill.model.GoalType;
 import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.SessionMode;
+import com.codex.desktreadmill.model.UnitSystem;
 import com.codex.desktreadmill.settings.TreadmillSettings;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.project.ProjectManager;
+import com.intellij.openapi.util.text.StringUtil;
 import com.intellij.openapi.wm.ToolWindow;
 import com.intellij.openapi.wm.ToolWindowManager;
 import org.jetbrains.annotations.Nullable;
@@ -22,6 +25,7 @@ import java.awt.AWTEvent;
 import java.awt.Toolkit;
 import java.awt.event.AWTEventListener;
 import java.awt.event.KeyEvent;
+import java.time.DayOfWeek;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -72,6 +76,13 @@ public final class WorkoutEngine implements Disposable {
     private boolean running;
     private boolean autoPaused;
     private boolean keepRunningWhenIdle;
+    /**
+     * True while the session holds changes the store hasn't seen. Shutdown
+     * only flushes a dirty session: re-saving a paused one that was already
+     * persisted at pause time would overwrite whatever another IDE did to it
+     * since, and that walk is the newer one.
+     */
+    private boolean dirty;
     private String statusNote = "";
     private long lastTickMillis;
     private long carryMillis;
@@ -115,7 +126,7 @@ public final class WorkoutEngine implements Disposable {
         if (interactive) {
             Toolkit.getDefaultToolkit().removeAWTEventListener(activityListener);
         }
-        if (session != null) {
+        if (session != null && dirty) {
             settings.saveSession(session);
         }
         listeners.clear();
@@ -162,6 +173,7 @@ public final class WorkoutEngine implements Disposable {
     }
 
     public void startSession(SessionData newSession) {
+        retireCurrentSession();
         session = newSession;
         beginRunning();
     }
@@ -170,7 +182,6 @@ public final class WorkoutEngine implements Disposable {
         if (session == null || session.completed) {
             return;
         }
-        session.completed = false;
         beginRunning();
     }
 
@@ -180,21 +191,68 @@ public final class WorkoutEngine implements Disposable {
 
     /** Sets the current session without starting the clock. */
     public void loadSession(SessionData loaded) {
-        timer.stop();
-        running = false;
-        autoPaused = false;
-        statusNote = "";
+        retireCurrentSession();
         session = loaded;
+        dirty = false;
         notifyStateChanged();
     }
 
     public void clearSession() {
+        retireCurrentSession();
+        session = null;
+        dirty = false;
+        notifyStateChanged();
+    }
+
+    /**
+     * Stops the clock before the current session is swapped out. A running
+     * session is paused rather than just stopped, because pausing persists:
+     * without that, New, a mode switch, or loading another session silently
+     * dropped everything walked since the last 30-second autosave.
+     */
+    private void retireCurrentSession() {
+        if (running) {
+            pauseInternal(false, "");
+        } else if (dirty) {
+            persist();
+        }
         timer.stop();
         running = false;
         autoPaused = false;
         statusNote = "";
-        session = null;
+    }
+
+    /**
+     * Takes over a stored copy of the current session that another IDE
+     * extended, so Resume continues from the newer walk instead of overwriting
+     * it with this clock's stale state. Only applies to a paused session whose
+     * stored twin has actually moved on; a running session is authoritative.
+     */
+    public void adoptStoredProgress(@Nullable SessionData stored) {
+        if (session == null || running || stored == null || !stored.id.equals(session.id)) {
+            return;
+        }
+        if (stored.elapsedSeconds == session.elapsedSeconds && stored.completed == session.completed) {
+            return;
+        }
+        session = stored.copy();
+        dirty = false;
         notifyStateChanged();
+    }
+
+    /**
+     * Undo for {@link #reset()}: puts the pre-reset copy back into the history
+     * and, if it is still the session on the clock and not running again, back
+     * onto the clock.
+     */
+    public void restoreSession(SessionData previous) {
+        settings.restoreSession(previous);
+        if (session != null && session.id.equals(previous.id) && !running) {
+            session = previous.copy();
+            dirty = false;
+            notifyStateChanged();
+        }
+        notifySessionsChanged();
     }
 
     /** Clears the current session if it matches the given id (e.g. after deletion). */
@@ -239,6 +297,7 @@ public final class WorkoutEngine implements Disposable {
             return;
         }
         session.speedKmh = speedKmh;
+        dirty = true;
         WorkoutMath.recalcRemaining(session, settings.getProfile());
         notifyStateChanged();
     }
@@ -251,6 +310,7 @@ public final class WorkoutEngine implements Disposable {
             return;
         }
         session.inclinePercent = inclinePercent;
+        dirty = true;
         WorkoutMath.recalcRemaining(session, settings.getProfile());
         notifyStateChanged();
     }
@@ -263,15 +323,17 @@ public final class WorkoutEngine implements Disposable {
             return;
         }
         session.algorithmId = algorithm.name();
+        dirty = true;
         WorkoutMath.recalcRemaining(session, settings.getProfile());
         notifyStateChanged();
     }
 
     public void setSessionName(String name) {
-        if (session == null || name.isBlank()) {
+        if (session == null || name.isBlank() || name.trim().equals(session.name)) {
             return;
         }
         session.name = name.trim();
+        dirty = true;
     }
 
     public void persistNow() {
@@ -333,11 +395,11 @@ public final class WorkoutEngine implements Disposable {
         }
         if (delta >= SUSPEND_GAP_MILLIS) {
             // Don't credit walking time that passed while the machine slept.
-            pauseInternal(true, "Auto-paused after system sleep");
+            pauseInternal(true, TreadmillBundle.message("status.autoPaused.sleep"));
             return;
         }
         if (shouldAutoPauseForIdle(now)) {
-            pauseInternal(true, "Auto-paused after " + settings.getAutoPauseMinutes() + " minutes without activity");
+            pauseInternal(true, TreadmillBundle.message("status.autoPaused.idle", settings.getAutoPauseMinutes()));
             return;
         }
         carryMillis += delta;
@@ -347,6 +409,7 @@ public final class WorkoutEngine implements Disposable {
             return;
         }
         lastWalkMillis = now;
+        dirty = true;
         SessionMode mode = SessionMode.fromId(session.modeId);
         boolean phaseSwitched = false;
         for (long i = 0; i < secondsToAdvance && running; i++) {
@@ -398,10 +461,7 @@ public final class WorkoutEngine implements Disposable {
             Toolkit.getDefaultToolkit().beep();
             TreadmillNotifications.info(
                     TreadmillBundle.message("notification.session.complete.title"),
-                    TreadmillBundle.message("notification.session.complete.content",
-                            session.name,
-                            String.format("%.2f", session.distanceKm),
-                            String.format("%.0f", session.calories))
+                    completionMessage(session, settings.getUnitSystem())
             );
         }
         SessionData completed = session;
@@ -409,6 +469,19 @@ public final class WorkoutEngine implements Disposable {
             listener.sessionCompleted(completed);
         }
         notifyStateChanged();
+    }
+
+    /**
+     * The completion balloon in the user's display units - it used to print
+     * the raw kilometres under a hard-coded "km" for imperial users too. The
+     * name is escaped because balloon content is rendered as HTML.
+     */
+    static String completionMessage(SessionData session, UnitSystem units) {
+        return TreadmillBundle.message("notification.session.complete.content",
+                StringUtil.escapeXmlEntities(session.name),
+                String.format("%.2f", units.distanceFromKm(session.distanceKm)),
+                units.distanceUnit(),
+                String.format("%.0f", session.calories));
     }
 
     private void maybeRemindToMove() {
@@ -438,7 +511,7 @@ public final class WorkoutEngine implements Disposable {
                 continue;
             }
             ToolWindow toolWindow = ToolWindowManager.getInstance(project)
-                    .getToolWindow(com.codex.desktreadmill.TreadmillToolWindowFactory.TOOL_WINDOW_ID);
+                    .getToolWindow(TreadmillToolWindowFactory.TOOL_WINDOW_ID);
             if (toolWindow != null) {
                 toolWindow.activate(null);
                 return;
@@ -469,12 +542,26 @@ public final class WorkoutEngine implements Disposable {
         lastActivityMillis = clock.getAsLong();
         // Any activity keeps the session alive, but only typing resumes an
         // auto-paused one: scrolling to read code doesn't mean you're walking again.
-        if (autoPaused
-                && event instanceof KeyEvent keyEvent
-                && keyEvent.getID() == KeyEvent.KEY_PRESSED
-                && !keyEvent.isActionKey()) {
+        if (autoPaused && event instanceof KeyEvent keyEvent && isTypingKey(keyEvent)) {
             SwingUtilities.invokeLater(this::resumeAfterTyping);
         }
+    }
+
+    /**
+     * A key press that means "typing": not an action key (F-keys, arrows,
+     * Page Up) and not a lone modifier or lock key - a stray Shift or Ctrl
+     * while reaching for the mouse is not evidence of walking again.
+     */
+    static boolean isTypingKey(KeyEvent event) {
+        if (event.getID() != KeyEvent.KEY_PRESSED || event.isActionKey()) {
+            return false;
+        }
+        return switch (event.getKeyCode()) {
+            case KeyEvent.VK_SHIFT, KeyEvent.VK_CONTROL, KeyEvent.VK_ALT, KeyEvent.VK_ALT_GRAPH,
+                    KeyEvent.VK_META, KeyEvent.VK_WINDOWS, KeyEvent.VK_CONTEXT_MENU,
+                    KeyEvent.VK_CAPS_LOCK, KeyEvent.VK_NUM_LOCK, KeyEvent.VK_SCROLL_LOCK -> false;
+            default -> true;
+        };
     }
 
     private void resumeAfterTyping() {
@@ -489,6 +576,7 @@ public final class WorkoutEngine implements Disposable {
             return;
         }
         settings.saveSession(session);
+        dirty = false;
         lastPersistMillis = clock.getAsLong();
         for (Listener listener : listeners) {
             listener.sessionsPersisted();
@@ -538,7 +626,7 @@ public final class WorkoutEngine implements Disposable {
         }
         ZoneId zone = ZoneId.systemDefault();
         LocalDate today = Instant.ofEpochMilli(clock.getAsLong()).atZone(zone).toLocalDate();
-        LocalDate weekStart = today.with(java.time.DayOfWeek.MONDAY);
+        LocalDate weekStart = today.with(DayOfWeek.MONDAY);
         if (settings.getLastWeeklyGoalAchievedWeek() == weekStart.toEpochDay()) {
             return;
         }

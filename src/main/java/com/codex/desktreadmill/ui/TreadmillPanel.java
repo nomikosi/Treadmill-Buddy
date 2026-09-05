@@ -26,7 +26,9 @@ import com.intellij.openapi.ui.ComponentValidator;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.ui.ValidationInfo;
 import com.intellij.openapi.ui.popup.JBPopupFactory;
+import com.intellij.openapi.util.text.StringUtil;
 import com.intellij.ui.DocumentAdapter;
+import com.intellij.ui.JBColor;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.components.JBTextField;
@@ -77,10 +79,11 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
     private final SavedSessionsPanel savedSessionsPanel;
     private final JBLabel speedRowLabel = new JBLabel();
     private final JBLabel fatTargetRowLabel = new JBLabel();
-    private final JBLabel distanceLabel = valueLabel("0.00 km");
-    private final JBLabel stepsLabel = valueLabel("0 steps");
-    private final JBLabel caloriesLabel = valueLabel("0 kcal");
-    private final JBLabel targetLabel = valueLabel("-");
+    // Filled by updateDisplay() at the end of the constructor.
+    private final JBLabel distanceLabel = valueLabel();
+    private final JBLabel stepsLabel = valueLabel();
+    private final JBLabel caloriesLabel = valueLabel();
+    private final JBLabel targetLabel = valueLabel();
     private final JButton startPauseButton = new JButton(TreadmillBundle.message("button.start"));
     private final JButton floatButton = new JButton(TreadmillBundle.message("button.floatClock"));
     private final JButton saveButton = new JButton(TreadmillBundle.message("button.saveSession"));
@@ -207,7 +210,7 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         DefaultActionGroup group = new DefaultActionGroup();
         List<SpeedPreset> presets = settings.getSpeedPresets();
         for (SpeedPreset preset : presets) {
-            String label = String.format("%s  (%s %s)", preset.name,
+            String label = TreadmillBundle.message("presets.item", preset.name,
                     format(currentUnits.speedFromKmh(preset.speedKmh)), currentUnits.speedUnit());
             group.add(new DumbAwareAction(label) {
                 @Override
@@ -263,10 +266,10 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
 
     private JComponent createMetrics() {
         JPanel metrics = new JPanel(new GridLayout(2, 2, 8, 8));
-        metrics.add(metricTile("Distance", distanceLabel));
-        metrics.add(metricTile("Steps", stepsLabel));
-        metrics.add(metricTile("Calories", caloriesLabel));
-        metrics.add(metricTile("Target", targetLabel));
+        metrics.add(metricTile(TreadmillBundle.message("panel.tile.distance"), distanceLabel));
+        metrics.add(metricTile(TreadmillBundle.message("panel.tile.steps"), stepsLabel));
+        metrics.add(metricTile(TreadmillBundle.message("panel.tile.calories"), caloriesLabel));
+        metrics.add(metricTile(TreadmillBundle.message("panel.tile.target"), targetLabel));
 
         JPanel wrapper = new JPanel(new BorderLayout(0, 8));
         wrapper.add(metrics, BorderLayout.CENTER);
@@ -292,8 +295,8 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         return buttons;
     }
 
-    private static JBLabel valueLabel(String text) {
-        JBLabel label = new JBLabel(text);
+    private static JBLabel valueLabel() {
+        JBLabel label = new JBLabel();
         label.setFont(label.getFont().deriveFont(Font.BOLD, 15f));
         label.setHorizontalAlignment(SwingConstants.CENTER);
         return label;
@@ -302,7 +305,7 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
     private static JComponent metricTile(String title, JBLabel value) {
         JPanel panel = new JPanel(new BorderLayout(0, 4));
         panel.setBorder(JBUI.Borders.compound(
-                JBUI.Borders.customLine(com.intellij.ui.JBColor.border()),
+                JBUI.Borders.customLine(JBColor.border()),
                 JBUI.Borders.empty(10)
         ));
         JBLabel titleLabel = new JBLabel(title);
@@ -343,7 +346,8 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
             applyInclineFromField();
             engine.resume();
         }
-        floatingClock.showWindow();
+        // Opens with the session, but stays away once the user has closed it.
+        floatingClock.showIfWanted();
     }
 
     private SessionData buildSessionFromInputs() {
@@ -354,7 +358,7 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         }
         double incline = parseInclineOrDefault();
         if (incline < 0) {
-            showError("Enter an incline between 0 and 30 percent.");
+            showError(TreadmillBundle.message("error.incline"));
             return null;
         }
         maybeShowHighSpeedPrompt(speed);
@@ -362,7 +366,7 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         UserProfile profile = settings.getProfile();
         double caloriesPerMinute = algorithm.kcalPerMinute(profile, speed, incline);
         if (caloriesPerMinute <= 0) {
-            showError("The selected calorie algorithm produced a zero burn rate.");
+            showError(TreadmillBundle.message("error.zeroBurnRate"));
             return null;
         }
 
@@ -379,7 +383,7 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         if (mode == SessionMode.CALORIE_BURN) {
             double targetCalories = parseDouble(calorieTargetField.getText());
             if (targetCalories <= 0) {
-                showError("Enter calories greater than zero.");
+                showError(TreadmillBundle.message("error.calories"));
                 return null;
             }
             session.targetCalories = targetCalories;
@@ -388,7 +392,7 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         } else if (mode == SessionMode.FAT_BURN) {
             double fatInput = parseDouble(fatTargetField.getText());
             if (fatInput <= 0) {
-                showError("Enter a weight target greater than zero.");
+                showError(TreadmillBundle.message("error.weightTarget"));
                 return null;
             }
             double fatKg = currentUnits.weightToKg(fatInput);
@@ -398,8 +402,8 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
             if (days > 99L) {
                 Messages.showInfoMessage(
                         project,
-                        "baby steps, it looks like you would need more than 99 days for your goal. Let's try to set a more tangible one first",
-                        "Goal Too Large"
+                        TreadmillBundle.message("dialog.goalTooLarge.message"),
+                        TreadmillBundle.message("dialog.goalTooLarge.title")
                 );
                 return null;
             }
@@ -411,7 +415,7 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
             long walkMinutes = Math.round(parseDouble(walkMinutesField.getText()));
             long breakMinutes = Math.round(parseDouble(breakMinutesField.getText()));
             if (walkMinutes <= 0 || walkMinutes > 720 || breakMinutes <= 0 || breakMinutes > 720) {
-                showError("Enter walk and break blocks between 1 and 720 minutes.");
+                showError(TreadmillBundle.message("error.intervalMinutes"));
                 return null;
             }
             session.intervalWalkSeconds = walkMinutes * 60L;
@@ -432,15 +436,15 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         // is free to show which block the clock is counting down.
         if (session != null && SessionMode.fromId(session.modeId) == SessionMode.INTERVAL
                 && WorkoutMath.hasIntervalBlocks(session)) {
-            clockPrefix = session.intervalWalking ? "Walk" : "Break";
+            clockPrefix = TreadmillBundle.message(session.intervalWalking ? "clock.prefix.walk" : "clock.prefix.break");
         }
         clockDisplay.setDisplay(clockPrefix, displayTime.getTimeText());
         floatingClock.setDisplay(clockPrefix, displayTime.getTimeText());
 
         if (session == null) {
-            distanceLabel.setText("0.00 " + currentUnits.distanceUnit());
-            stepsLabel.setText("0 steps");
-            caloriesLabel.setText("0 kcal");
+            distanceLabel.setText(distanceText(0.0));
+            stepsLabel.setText(stepsText(0L));
+            caloriesLabel.setText(kcalText(0.0));
             targetLabel.setText(previewTargetText());
             statsPanel.setStatus(TreadmillBundle.message("status.ready"));
             startPauseButton.setText(TreadmillBundle.message("button.start"));
@@ -449,22 +453,19 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         }
 
         SessionMode mode = SessionMode.fromId(session.modeId);
-        distanceLabel.setText(String.format("%.2f %s",
-                currentUnits.distanceFromKm(session.distanceKm), currentUnits.distanceUnit()));
-        stepsLabel.setText(String.format("%,d steps", session.steps));
-        caloriesLabel.setText(String.format("%.0f kcal", session.calories));
+        distanceLabel.setText(distanceText(session.distanceKm));
+        stepsLabel.setText(stepsText(session.steps));
+        caloriesLabel.setText(kcalText(session.calories));
         if (mode == SessionMode.MARATHON) {
             targetLabel.setText(TreadmillBundle.message("panel.target.open"));
         } else if (mode == SessionMode.CALORIE_BURN) {
-            targetLabel.setText(String.format("%.0f kcal", session.targetCalories));
+            targetLabel.setText(kcalText(session.targetCalories));
         } else if (mode == SessionMode.INTERVAL) {
             targetLabel.setText(WorkoutMath.hasIntervalBlocks(session)
-                    ? String.format("%d / %d min",
-                    session.intervalWalkSeconds / 60, session.intervalBreakSeconds / 60)
+                    ? intervalBlocksText(session.intervalWalkSeconds / 60, session.intervalBreakSeconds / 60)
                     : TreadmillBundle.message("panel.target.open"));
         } else {
-            targetLabel.setText(String.format("%.2f %s",
-                    currentUnits.weightFromKg(session.targetFatKg), currentUnits.weightUnit()));
+            targetLabel.setText(weightText(currentUnits.weightFromKg(session.targetFatKg)));
         }
         distanceLabel.setToolTipText(segmentsTooltip(session));
         String status = engine.isRunning()
@@ -505,9 +506,33 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         }
     }
 
+    /**
+     * Reset zeroes the session on the clock and persists that under the same
+     * id - which, for a walk loaded from the history, erases a real record.
+     * So a session with walked time asks first and offers an undo afterwards.
+     */
     private void resetCurrentSession() {
+        SessionData session = engine.getSession();
+        if (session == null) {
+            return;
+        }
+        SessionData before = session.copy();
+        if (before.elapsedSeconds > 0) {
+            int answer = Messages.showYesNoDialog(project,
+                    TreadmillBundle.message("reset.confirm.message",
+                            before.name, TimeFormatter.displayTime(before.elapsedSeconds).getTimeText()),
+                    TreadmillBundle.message("reset.confirm.title"), Messages.getWarningIcon());
+            if (answer != Messages.YES) {
+                return;
+            }
+        }
         engine.reset();
         updateDisplay();
+        if (before.elapsedSeconds > 0) {
+            TreadmillNotifications.withUndo(project,
+                    TreadmillBundle.message("notification.session.reset", StringUtil.escapeXmlEntities(before.name)),
+                    () -> engine.restoreSession(before));
+        }
     }
 
     private void newSession() {
@@ -561,8 +586,32 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
     }
 
     private String speedRangeMessage() {
-        return String.format("Enter a treadmill speed between 0 and %.1f %s.",
-                currentUnits.speedFromKmh(25.0), currentUnits.speedUnit());
+        return TreadmillBundle.message("error.speedRange", maxSpeedText(), currentUnits.speedUnit());
+    }
+
+    private String maxSpeedText() {
+        return String.format("%.1f", currentUnits.speedFromKmh(25.0));
+    }
+
+    private String distanceText(double km) {
+        return TreadmillBundle.message("panel.value.distance",
+                String.format("%.2f", currentUnits.distanceFromKm(km)), currentUnits.distanceUnit());
+    }
+
+    private static String stepsText(long steps) {
+        return TreadmillBundle.message("panel.value.steps", steps);
+    }
+
+    private static String kcalText(double kcal) {
+        return TreadmillBundle.message("panel.value.kcal", String.format("%.0f", kcal));
+    }
+
+    private static String intervalBlocksText(long walkMinutes, long breakMinutes) {
+        return TreadmillBundle.message("panel.value.intervalBlocks", walkMinutes, breakMinutes);
+    }
+
+    private String weightText(double displayWeight) {
+        return TreadmillBundle.message("panel.value.weight", String.format("%.2f", displayWeight), currentUnits.weightUnit());
     }
 
     private void loadLastSessionOrDefault() {
@@ -632,7 +681,9 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         }
         if (!highSpeedWarningShown) {
             highSpeedWarningShown = true;
-            Messages.showWarningDialog(project, "slow down coyote beep beep!!", "Speed Warning");
+            Messages.showWarningDialog(project,
+                    TreadmillBundle.message("dialog.speedWarning.message"),
+                    TreadmillBundle.message("dialog.speedWarning.title"));
         }
     }
 
@@ -655,19 +706,19 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         installValidator(speedField, () -> {
             double speed = parseSpeedKmh();
             return speed <= 0 || speed > 25
-                    ? new ValidationInfo(String.format("Speed must be between 0 and %.1f %s",
-                    currentUnits.speedFromKmh(25.0), currentUnits.speedUnit()), speedField)
+                    ? new ValidationInfo(TreadmillBundle.message("validation.speed",
+                    maxSpeedText(), currentUnits.speedUnit()), speedField)
                     : null;
         });
         installValidator(inclineField, () -> parseInclineOrDefault() < 0
-                ? new ValidationInfo("Incline must be between 0 and 30 percent", inclineField)
+                ? new ValidationInfo(TreadmillBundle.message("validation.incline"), inclineField)
                 : null);
         installValidator(calorieTargetField, () -> {
             if (selectedMode() != SessionMode.CALORIE_BURN) {
                 return null;
             }
             return parseDouble(calorieTargetField.getText()) <= 0
-                    ? new ValidationInfo("Enter calories greater than zero", calorieTargetField)
+                    ? new ValidationInfo(TreadmillBundle.message("validation.calories"), calorieTargetField)
                     : null;
         });
         installValidator(fatTargetField, () -> {
@@ -675,7 +726,8 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
                 return null;
             }
             return parseDouble(fatTargetField.getText()) <= 0
-                    ? new ValidationInfo("Enter a KG target greater than zero", fatTargetField)
+                    ? new ValidationInfo(TreadmillBundle.message("validation.weightTarget",
+                    currentUnits.weightUnit()), fatTargetField)
                     : null;
         });
         installValidator(walkMinutesField, () -> intervalMinutesValidation(walkMinutesField));
@@ -688,7 +740,7 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         }
         double minutes = parseDouble(field.getText());
         return minutes <= 0 || minutes > 720
-                ? new ValidationInfo("Enter minutes between 1 and 720", field)
+                ? new ValidationInfo(TreadmillBundle.message("validation.intervalMinutes"), field)
                 : null;
     }
 
@@ -788,11 +840,16 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         if (session.segments.size() < 2) {
             return null;
         }
-        StringBuilder text = new StringBuilder("<html><b>Speed breakdown</b><br>");
+        StringBuilder text = new StringBuilder("<html><b>")
+                .append(StringUtil.escapeXmlEntities(TreadmillBundle.message("tooltip.segments.title")))
+                .append("</b><br>");
         for (SpeedSegment segment : session.segments) {
-            String duration = segment.seconds < 60 ? "&lt;1 min" : (segment.seconds / 60) + " min";
-            text.append(String.format("%s @ %s %s<br>",
-                    duration, format(currentUnits.speedFromKmh(segment.speedKmh)), currentUnits.speedUnit()));
+            String duration = segment.seconds < 60
+                    ? TreadmillBundle.message("tooltip.segments.underMinute")
+                    : TreadmillBundle.message("tooltip.segments.minutes", segment.seconds / 60);
+            text.append(StringUtil.escapeXmlEntities(TreadmillBundle.message("tooltip.segments.row",
+                    duration, format(currentUnits.speedFromKmh(segment.speedKmh)), currentUnits.speedUnit())));
+            text.append("<br>");
         }
         return text.append("</html>").toString();
     }
@@ -833,19 +890,20 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         if (mode == SessionMode.MARATHON) {
             return TreadmillBundle.message("panel.target.open");
         }
+        String none = TreadmillBundle.message("panel.value.none");
         if (mode == SessionMode.CALORIE_BURN) {
             double targetCalories = parseDouble(calorieTargetField.getText());
-            return targetCalories > 0 ? String.format("%.0f kcal", targetCalories) : "-";
+            return targetCalories > 0 ? kcalText(targetCalories) : none;
         }
         if (mode == SessionMode.INTERVAL) {
             double walkMinutes = parseDouble(walkMinutesField.getText());
             double breakMinutes = parseDouble(breakMinutesField.getText());
             return walkMinutes > 0 && breakMinutes > 0
-                    ? String.format("%d / %d min", Math.round(walkMinutes), Math.round(breakMinutes))
-                    : "-";
+                    ? intervalBlocksText(Math.round(walkMinutes), Math.round(breakMinutes))
+                    : none;
         }
         double fatInput = parseDouble(fatTargetField.getText());
-        return fatInput > 0 ? String.format("%.2f %s", fatInput, currentUnits.weightUnit()) : "-";
+        return fatInput > 0 ? weightText(fatInput) : none;
     }
 
     private static String defaultSessionName(SessionMode mode) {
@@ -871,6 +929,6 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
     }
 
     private void showError(String message) {
-        Messages.showErrorDialog(project, message, "Treadmill Buddy");
+        Messages.showErrorDialog(project, message, TreadmillBundle.message("notification.title"));
     }
 }

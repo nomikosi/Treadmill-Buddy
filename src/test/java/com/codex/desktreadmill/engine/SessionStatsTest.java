@@ -191,14 +191,4 @@ class SessionStatsTest {
         assertEquals(day.plusDays(1).toEpochDay(), records.bestDayDistanceEpochDay);
         assertEquals(3000L, records.bestDaySteps);
     }
-
-    @Test
-    void streakCountsConsecutiveWalkingDays() {
-        assertEquals(3, SessionStats.streakDays(new double[]{0.0, 1.0, 2.0, 1.0}));
-        // A quiet today falls back to counting from yesterday.
-        assertEquals(2, SessionStats.streakDays(new double[]{0.0, 1.0, 2.0, 0.0}));
-        assertEquals(0, SessionStats.streakDays(new double[]{1.0, 0.0, 0.0, 0.0}));
-        assertEquals(4, SessionStats.streakDays(new double[]{1.0, 1.0, 1.0, 1.0}));
-        assertEquals(0, SessionStats.streakDays(new double[]{}));
-    }
 }

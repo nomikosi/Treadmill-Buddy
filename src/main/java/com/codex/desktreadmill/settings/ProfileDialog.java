@@ -1,5 +1,6 @@
 package com.codex.desktreadmill.settings;
 
+import com.codex.desktreadmill.TreadmillBundle;
 import com.codex.desktreadmill.engine.WorkoutEngine;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
@@ -13,11 +14,8 @@ public final class ProfileDialog extends DialogWrapper {
 
     public ProfileDialog(@Nullable Project project) {
         super(project);
-        setTitle("Treadmill Buddy Profile");
-        profilePanel.setValues(
-                TreadmillSettings.getInstance().getProfile(),
-                TreadmillSettings.getInstance().getSelectedAlgorithm()
-        );
+        setTitle(TreadmillBundle.message("profile.dialog.title"));
+        profilePanel.setValues(TreadmillSettings.getInstance());
         init();
     }
 
@@ -44,14 +42,9 @@ public final class ProfileDialog extends DialogWrapper {
     }
 
     private void applyValues() {
-        TreadmillSettings settings = TreadmillSettings.getInstance();
-        settings.setProfile(profilePanel.getProfile());
-        settings.setSelectedAlgorithm(profilePanel.getAlgorithm());
-        settings.setAutoPauseMinutes(profilePanel.getAutoPauseMinutes());
-        settings.setMoveReminderMinutes(profilePanel.getMoveReminderMinutes());
-        settings.setUnitSystem(profilePanel.getUnitSystem());
-        settings.setDailyGoalType(profilePanel.getDailyGoalType());
-        settings.setDailyGoalValue(profilePanel.getDailyGoalValueMetric());
+        // Same writer as the Settings page, so the first-run dialog can't
+        // quietly drop the weekly goal, rest days, or risk hour it displays.
+        profilePanel.applyTo(TreadmillSettings.getInstance());
         WorkoutEngine.getInstance().refreshListeners();
     }
 }

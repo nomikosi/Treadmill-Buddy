@@ -3,6 +3,7 @@ package com.codex.desktreadmill.engine;
 import com.codex.desktreadmill.calories.CalorieAlgorithm;
 import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.SessionMode;
+import com.codex.desktreadmill.model.UnitSystem;
 import com.codex.desktreadmill.model.UserProfile;
 import com.codex.desktreadmill.settings.TreadmillSettings;
 import org.junit.jupiter.api.AfterEach;
@@ -10,7 +11,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import javax.swing.JPanel;
+import java.awt.event.KeyEvent;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -20,6 +26,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class WorkoutEngineTest {
@@ -394,5 +401,147 @@ class WorkoutEngineTest {
         engine.tick();
         SessionData stored = settings.findSession("test");
         assertTrue(stored != null && stored.elapsedSeconds > 0);
+    }
+
+    @Test
+    void clearingARunningSessionPersistsItsProgressFirst() {
+        engine.startSession(marathonSession());
+        // Ten seconds: well inside the 30-second autosave window, so nothing
+        // but the clear itself can have written this progress.
+        nowMillis += 10_000;
+        engine.tick();
+        engine.clearSession();
+        SessionData stored = settings.findSession("test");
+        assertNotNull(stored);
+        assertEquals(10L, stored.elapsedSeconds, "New must not drop the walk since the last autosave");
+    }
+
+    @Test
+    void loadingAnotherSessionPersistsTheRunningOneFirst() {
+        engine.startSession(marathonSession());
+        nowMillis += 10_000;
+        engine.tick();
+        SessionData other = marathonSession();
+        other.id = "other";
+        engine.loadSession(other);
+        assertEquals("other", engine.getSession().id);
+        assertFalse(engine.isRunning());
+        assertEquals(10L, settings.findSession("test").elapsedSeconds);
+    }
+
+    @Test
+    void startingANewSessionPersistsTheRunningOneFirst() {
+        engine.startSession(marathonSession());
+        nowMillis += 10_000;
+        engine.tick();
+        SessionData next = marathonSession();
+        next.id = "next";
+        engine.startSession(next);
+        assertTrue(engine.isRunning());
+        assertEquals(10L, settings.findSession("test").elapsedSeconds);
+    }
+
+    /** Simulates a second IDE extending the same session in the shared store. */
+    private void extendElsewhere(String id, long elapsedSeconds) throws IOException {
+        Path file = tempDir.resolve("sessions.json");
+        TreadmillSettings otherIde = new TreadmillSettings(file);
+        SessionData extended = otherIde.findSession(id);
+        assertNotNull(extended);
+        extended.elapsedSeconds = elapsedSeconds;
+        otherIde.saveSession(extended);
+        // Make sure the change is visible even on coarse filesystem clocks.
+        Files.setLastModifiedTime(file, FileTime.fromMillis(Files.getLastModifiedTime(file).toMillis() + 5_000));
+    }
+
+    @Test
+    void shutdownDoesNotOverwriteAPausedSessionExtendedInAnotherIde() throws IOException {
+        engine.startSession(marathonSession());
+        nowMillis += 10_000;
+        engine.tick();
+        engine.pause();
+        extendElsewhere("test", 99L);
+
+        // Pause already persisted this clock's state; flushing it again would
+        // roll the other IDE's 99 seconds back to 10.
+        engine.dispose();
+        assertEquals(99L, new TreadmillSettings(tempDir.resolve("sessions.json")).findSession("test").elapsedSeconds);
+    }
+
+    @Test
+    void resumeContinuesFromTheCopyExtendedInAnotherIde() throws IOException {
+        engine.startSession(marathonSession());
+        nowMillis += 10_000;
+        engine.tick();
+        engine.pause();
+        extendElsewhere("test", 99L);
+
+        assertTrue(settings.reloadSessions(), "the focus refresh must notice the other IDE's write");
+        engine.adoptStoredProgress(settings.findSession("test"));
+        assertEquals(99L, engine.getSession().elapsedSeconds);
+
+        engine.resume();
+        nowMillis += 5_000;
+        engine.tick();
+        assertEquals(104L, engine.getSession().elapsedSeconds);
+        engine.pause();
+        assertEquals(104L, settings.findSession("test").elapsedSeconds,
+                "the pause after resume persists the continued walk, not a rollback to 10");
+    }
+
+    @Test
+    void aRunningSessionIsNotReplacedByAStoredCopy() {
+        engine.startSession(marathonSession());
+        nowMillis += 10_000;
+        engine.tick();
+        SessionData stale = engine.getSession().copy();
+        stale.elapsedSeconds = 99L;
+        engine.adoptStoredProgress(stale);
+        assertEquals(10L, engine.getSession().elapsedSeconds, "the clock that is running is the authority");
+    }
+
+    @Test
+    void restoreAfterResetPutsTheWalkBackOnTheClockAndInHistory() {
+        engine.startSession(marathonSession());
+        nowMillis += 10_000;
+        engine.tick();
+        engine.pause();
+        SessionData before = engine.getSession().copy();
+
+        engine.reset();
+        assertEquals(0L, settings.findSession("test").elapsedSeconds);
+
+        engine.restoreSession(before);
+        assertEquals(10L, engine.getSession().elapsedSeconds);
+        assertEquals(10L, settings.findSession("test").elapsedSeconds);
+    }
+
+    @Test
+    void onlyRealTypingCountsAsTyping() {
+        JPanel source = new JPanel();
+        assertTrue(WorkoutEngine.isTypingKey(
+                new KeyEvent(source, KeyEvent.KEY_PRESSED, 0L, 0, KeyEvent.VK_A, 'a')));
+        assertFalse(WorkoutEngine.isTypingKey(
+                new KeyEvent(source, KeyEvent.KEY_PRESSED, 0L, 0, KeyEvent.VK_SHIFT, KeyEvent.CHAR_UNDEFINED)),
+                "a lone Shift is not typing");
+        assertFalse(WorkoutEngine.isTypingKey(
+                new KeyEvent(source, KeyEvent.KEY_PRESSED, 0L, 0, KeyEvent.VK_CONTROL, KeyEvent.CHAR_UNDEFINED)));
+        assertFalse(WorkoutEngine.isTypingKey(
+                new KeyEvent(source, KeyEvent.KEY_PRESSED, 0L, 0, KeyEvent.VK_F5, KeyEvent.CHAR_UNDEFINED)),
+                "action keys never counted");
+        assertFalse(WorkoutEngine.isTypingKey(
+                new KeyEvent(source, KeyEvent.KEY_RELEASED, 0L, 0, KeyEvent.VK_A, 'a')));
+    }
+
+    @Test
+    void completionMessageUsesDisplayUnitsAndEscapesTheName() {
+        SessionData session = marathonSession();
+        session.name = "Walk <b>bold</b>";
+        session.distanceKm = 2.25;
+        session.calories = 150.4;
+        String imperial = WorkoutEngine.completionMessage(session, UnitSystem.IMPERIAL);
+        assertTrue(imperial.contains(" mi,"), "imperial users must not be told km: " + imperial);
+        assertFalse(imperial.contains("km"));
+        assertTrue(imperial.contains("&lt;b&gt;"), "balloon content is HTML, names must be escaped: " + imperial);
+        assertTrue(WorkoutEngine.completionMessage(session, UnitSystem.METRIC).contains(" km,"));
     }
 }

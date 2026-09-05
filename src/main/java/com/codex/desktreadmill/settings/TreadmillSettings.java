@@ -135,16 +135,29 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
         return sessionStore.getSessions();
     }
 
+    /** Saves the current workout and remembers it as the one to reload on the next IDE start. */
     public void saveSession(SessionData session) {
+        state.lastSessionId = restoreSession(session);
+    }
+
+    /**
+     * Writes a session into the history without touching the "last session"
+     * marker: an undo or an import must not make some arbitrary row the walk
+     * the clock shows after the next restart. Returns the id it was stored under.
+     */
+    public String restoreSession(SessionData session) {
         SessionData copy = session.copy();
         if (copy.id == null || copy.id.isBlank()) {
             copy.id = String.valueOf(System.currentTimeMillis());
         }
         sessionStore.saveSession(copy);
-        state.lastSessionId = copy.id;
+        return copy.id;
     }
 
-    /** Bulk save with a single store write; imports use this instead of N single saves. */
+    /**
+     * Bulk save with a single store write; imports use this instead of N
+     * single saves. History only - see {@link #restoreSession}.
+     */
     public void saveSessions(List<SessionData> sessions) {
         if (sessions.isEmpty()) {
             return;
@@ -158,7 +171,6 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
             copies.add(copy);
         }
         sessionStore.saveSessions(copies);
-        state.lastSessionId = copies.get(copies.size() - 1).id;
     }
 
     public void deleteSession(String id) {
@@ -330,9 +342,9 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
         state.lastStepsRecordDay = epochDay;
     }
 
-    /** Picks up sessions another IDE instance wrote since our last read. */
-    public void reloadSessions() {
-        sessionStore.reload();
+    /** Picks up what another IDE instance wrote since our last read; true when anything changed. */
+    public boolean reloadSessions() {
+        return sessionStore.reload();
     }
 
     public boolean hasFloatingClockLocation() {
@@ -360,6 +372,20 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
         state.floatingClockPinned = pinned;
     }
 
+    /**
+     * Whether starting a session opens the floating clock by itself. Closing
+     * the clock turns this off, opening it from the Float Clock button turns
+     * it back on - so a dismissed clock stays dismissed across sessions and
+     * IDE restarts instead of popping back on every Start.
+     */
+    public boolean isFloatingClockAutoShow() {
+        return state.floatingClockAutoShow;
+    }
+
+    public void setFloatingClockAutoShow(boolean autoShow) {
+        state.floatingClockAutoShow = autoShow;
+    }
+
     public static class StateData {
         public UserProfile profile = new UserProfile();
         public String selectedAlgorithmId = CalorieAlgorithm.ACSM_FLAT.name();
@@ -372,6 +398,7 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
         public int floatingClockX = Integer.MIN_VALUE;
         public int floatingClockY = Integer.MIN_VALUE;
         public boolean floatingClockPinned = false;
+        public boolean floatingClockAutoShow = true;
         public String unitSystemId = UnitSystem.METRIC.name();
         public String dailyGoalTypeId = GoalType.NONE.name();
         public double dailyGoalValue = 0.0;

@@ -17,6 +17,7 @@ import com.intellij.openapi.project.DumbAware;
 import com.intellij.openapi.project.DumbAwareAction;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.openapi.util.text.StringUtil;
 import com.intellij.ui.CollectionListModel;
 import com.intellij.ui.ColoredListCellRenderer;
 import com.intellij.ui.DoubleClickListener;
@@ -237,14 +238,22 @@ public final class SavedSessionsPanel {
             return;
         }
         SessionData deleted = session.copy();
+        // Deleting clears the "last session" marker when it pointed here;
+        // undo puts it back only in that case, so undoing some old row never
+        // makes it the walk the clock opens with after the next restart.
+        boolean wasLast = deleted.id.equals(settings.getLastSessionId());
         settings.deleteSession(session.id);
         engine.clearSessionIf(session.id);
         engine.notifySessionsChanged();
         TreadmillNotifications.withUndo(
                 project,
-                TreadmillBundle.message("notification.session.deleted", deleted.name),
+                TreadmillBundle.message("notification.session.deleted", StringUtil.escapeXmlEntities(deleted.name)),
                 () -> {
-                    settings.saveSession(deleted);
+                    if (wasLast) {
+                        settings.saveSession(deleted);
+                    } else {
+                        settings.restoreSession(deleted);
+                    }
                     engine.notifySessionsChanged();
                 }
         );
@@ -306,8 +315,10 @@ public final class SavedSessionsPanel {
                 text.append(time.getDayPrefix()).append(' ');
             }
             text.append(time.getTimeText());
-            text.append(String.format(" · %.2f %s · %.0f kcal",
-                    currentUnits.distanceFromKm(session.distanceKm), currentUnits.distanceUnit(), session.calories));
+            text.append(" · ").append(TreadmillBundle.message("sessions.describe.metrics",
+                    String.format("%.2f", currentUnits.distanceFromKm(session.distanceKm)),
+                    currentUnits.distanceUnit(),
+                    String.format("%.0f", session.calories)));
         }
         if (session.createdMillis > 0) {
             text.append(" · ").append(

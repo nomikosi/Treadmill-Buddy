@@ -73,7 +73,7 @@ public final class TreadmillStatusBarWidget implements StatusBarWidget, StatusBa
         // paused widget claims the user is mid-block when nothing is moving.
         String blockPrefix = engine.isRunning()
                 && mode == SessionMode.INTERVAL && WorkoutMath.hasIntervalBlocks(session)
-                ? (session.intervalWalking ? "Walk " : "Break ")
+                ? TreadmillBundle.message(session.intervalWalking ? "clock.prefix.walk" : "clock.prefix.break") + " "
                 : "";
         TimeFormatter.DisplayTime time = TimeFormatter.displayTime(seconds);
         String prefix = time.getDayPrefix().isBlank() ? "" : time.getDayPrefix() + " ";
