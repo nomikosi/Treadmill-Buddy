@@ -18,6 +18,27 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Fail in seconds, not after a full build and verification: a missing
+      # token only surfaces at publishPlugin, and missing signing secrets
+      # merely skip signPlugin - which would publish an unsigned build.
+      - name: Check that the publishing secrets are configured
+        env:
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
+        run: |
+          missing=""
+          for name in PUBLISH_TOKEN CERTIFICATE_CHAIN PRIVATE_KEY PRIVATE_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              missing="${missing} ${name}"
+            fi
+          done
+          if [ -n "${missing}" ]; then
+            echo "::error::Missing repository secrets:${missing}. Add them under Settings > Secrets and variables > Actions (names must match exactly), then re-run this workflow." >&2
+            exit 1
+          fi
+
       # Rejects a tampered or unknown gradle-wrapper.jar before anything runs it.
       - uses: gradle/actions/wrapper-validation@v6
 
