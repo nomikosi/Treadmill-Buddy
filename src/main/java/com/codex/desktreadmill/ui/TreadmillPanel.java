@@ -96,6 +96,16 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
     private boolean populatingFields;
     private boolean highSpeedWarningShown;
     private UnitSystem currentUnits;
+    /**
+     * What this panel last saw of the shared session. The engine is
+     * application-wide, so a change made in another project window has to be
+     * mirrored into these fields - without clobbering an edit in progress here.
+     */
+    private String seenSessionId;
+    private double seenSpeedKmh;
+    private double seenInclinePercent;
+    private String seenAlgorithmId = "";
+    private String seenName = "";
 
     public TreadmillPanel(Project project) {
         super(new BorderLayout());
@@ -147,7 +157,65 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
 
     @Override
     public void workoutStateChanged() {
+        mirrorSharedSession();
         updateDisplay();
+    }
+
+    /**
+     * Follows the shared session into this panel's editable fields. A session
+     * this panel hasn't seen (started or loaded in another window) repopulates
+     * everything; for the session it already shows, only a field whose engine
+     * value moved since this panel last looked is refreshed, and only when the
+     * field doesn't already say so - that keeps a keystroke this very panel
+     * just pushed to the engine from bouncing back as a reformat. Without
+     * this, Resume or Save in a second window pushed that window's stale
+     * speed, incline, or name over the walk in progress.
+     */
+    private void mirrorSharedSession() {
+        SessionData session = engine.getSession();
+        if (session == null) {
+            seenSessionId = null;
+            return;
+        }
+        if (!session.id.equals(seenSessionId)) {
+            populateFields(session);
+            return;
+        }
+        populatingFields = true;
+        try {
+            if (session.speedKmh != seenSpeedKmh) {
+                seenSpeedKmh = session.speedKmh;
+                if (Math.abs(parseSpeedKmh() - session.speedKmh) > 0.001) {
+                    speedField.setText(format(currentUnits.speedFromKmh(session.speedKmh)));
+                }
+            }
+            if (session.inclinePercent != seenInclinePercent) {
+                seenInclinePercent = session.inclinePercent;
+                if (Math.abs(Math.max(0.0, parseInclineOrDefault()) - session.inclinePercent) > 0.001) {
+                    inclineField.setText(session.inclinePercent > 0 ? format(session.inclinePercent) : "0");
+                }
+            }
+            if (!session.algorithmId.equals(seenAlgorithmId)) {
+                seenAlgorithmId = session.algorithmId;
+                algorithmCombo.setSelectedItem(CalorieAlgorithm.fromId(session.algorithmId));
+            }
+            if (!session.name.equals(seenName)) {
+                seenName = session.name;
+                if (!sessionNameField.getText().trim().equals(session.name)) {
+                    sessionNameField.setText(session.name);
+                }
+            }
+        } finally {
+            populatingFields = false;
+        }
+    }
+
+    private void rememberSeen(SessionData session) {
+        seenSessionId = session.id;
+        seenSpeedKmh = session.speedKmh;
+        seenInclinePercent = session.inclinePercent;
+        seenAlgorithmId = session.algorithmId;
+        seenName = session.name;
     }
 
     @Override
@@ -321,8 +389,10 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         }
         SessionMode mode = selectedMode();
         targetCards.show(targetPanel, mode.name());
-        sessionNameField.setText(defaultSessionName(mode));
+        // Clear first: the default name below is pushed to the engine as it
+        // is typed, and would otherwise rename the session being dropped.
         engine.clearSession();
+        sessionNameField.setText(defaultSessionName(mode));
         updateDisplay();
     }
 
@@ -498,11 +568,11 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         } else {
             engine.setSessionName(sessionNameField.getText());
         }
-        engine.persistNow();
+        boolean persisted = engine.persistNow();
         if (showConfirmation) {
             TreadmillNotifications.info(project,
                     TreadmillBundle.message("notification.title"),
-                    TreadmillBundle.message("notification.session.saved"));
+                    TreadmillBundle.message(persisted ? "notification.session.saved" : "notification.session.saveFailed"));
         }
     }
 
@@ -642,6 +712,7 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
                 walkMinutesField.setText(String.valueOf(session.intervalWalkSeconds / 60));
                 breakMinutesField.setText(String.valueOf(session.intervalBreakSeconds / 60));
             }
+            rememberSeen(session);
         } finally {
             populatingFields = false;
         }
@@ -698,6 +769,16 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
             @Override
             protected void textChanged(@NotNull DocumentEvent event) {
                 inclineChanged();
+            }
+        });
+        // The name follows the field as it is typed, like speed and incline,
+        // so every window shows the same name and Save has nothing to catch up.
+        sessionNameField.getDocument().addDocumentListener(new DocumentAdapter() {
+            @Override
+            protected void textChanged(@NotNull DocumentEvent event) {
+                if (!populatingFields) {
+                    engine.setSessionName(sessionNameField.getText());
+                }
             }
         });
     }
@@ -910,9 +991,11 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         return mode.getLabel() + " " + LocalDateTime.now().format(SESSION_NAME_FORMAT);
     }
 
+    /** The field's number, or -1 when it is not a usable one: "NaN" parses but passes every range check. */
     private static double parseDouble(String value) {
         try {
-            return Double.parseDouble(value.trim().replace(',', '.'));
+            double parsed = Double.parseDouble(value.trim().replace(',', '.'));
+            return Double.isFinite(parsed) ? parsed : -1.0;
         } catch (NumberFormatException ignored) {
             return -1.0;
         }

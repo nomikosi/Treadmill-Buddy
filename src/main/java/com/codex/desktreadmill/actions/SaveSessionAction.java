@@ -15,10 +15,10 @@ public final class SaveSessionAction extends DumbAwareAction {
         if (engine.getSession() == null) {
             return;
         }
-        engine.persistNow();
+        boolean persisted = engine.persistNow();
         TreadmillNotifications.info(event.getProject(),
                 TreadmillBundle.message("notification.title"),
-                TreadmillBundle.message("notification.session.saved"));
+                TreadmillBundle.message(persisted ? "notification.session.saved" : "notification.session.saveFailed"));
     }
 
     @Override

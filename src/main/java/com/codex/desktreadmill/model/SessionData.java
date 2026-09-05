@@ -33,10 +33,13 @@ public class SessionData {
     public List<SpeedSegment> segments = new ArrayList<>();
 
     /**
-     * Repairs nulls that hand-edited or foreign JSON can carry. Gson keeps the
-     * field initializers for <em>missing</em> keys but writes an explicit
+     * Repairs values that hand-edited or foreign JSON can carry. Gson keeps
+     * the field initializers for <em>missing</em> keys but writes an explicit
      * {@code null} through, and a null name later takes down CSV export and the
-     * history list for the whole store. Returns this for chaining.
+     * history list for the whole store. Non-finite numbers (a lenient parser
+     * accepts {@code NaN}) fall back to their defaults: they would poison every
+     * later calculation and make Gson refuse to write the file at all.
+     * Returns this for chaining.
      */
     public SessionData sanitize() {
         if (name == null) {
@@ -52,8 +55,21 @@ public class SessionData {
             segments = new ArrayList<>();
         } else {
             segments.removeIf(Objects::isNull);
+            for (SpeedSegment segment : segments) {
+                segment.speedKmh = finiteOr(segment.speedKmh, 0.0);
+            }
         }
+        speedKmh = finiteOr(speedKmh, 3.0);
+        inclinePercent = finiteOr(inclinePercent, 0.0);
+        targetCalories = finiteOr(targetCalories, 0.0);
+        targetFatKg = finiteOr(targetFatKg, 0.0);
+        distanceKm = finiteOr(distanceKm, 0.0);
+        calories = finiteOr(calories, 0.0);
         return this;
+    }
+
+    private static double finiteOr(double value, double fallback) {
+        return Double.isFinite(value) ? value : fallback;
     }
 
     public SessionData copy() {

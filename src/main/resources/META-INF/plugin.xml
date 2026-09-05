@@ -39,7 +39,12 @@ limitations under the License.
             <li>1.1.1:
                 <ul>
                     <li>Walking time is no longer lost when a running session is replaced: New, a mode switch, or loading another session now saves the current walk first.</li>
-                    <li>Cross-IDE history sync keeps the newer copy of a session that was resumed in another IDE, refreshes it on focus, and no longer overwrites it on shutdown; concurrent saves from two IDEs use separate temp files.</li>
+                    <li>Cross-IDE history: writes take a cross-process lock and merge the file under it, a session resumed in another IDE keeps its newer state here and on shutdown, a session deleted in another IDE disappears here too, and a history file that cannot be parsed is set aside instead of overwritten.</li>
+                    <li>CSV and JSON import no longer skip a session just because its name and start minute match another one; rows that carry an id are matched by id.</li>
+                    <li>Interval walks: the walk block after a break starts with a fresh idle window instead of auto-pausing on its first tick, and the idle auto-pause credits walking up to the moment the threshold was crossed.</li>
+                    <li>Several open project windows now mirror the shared session's speed, incline, algorithm, and name, so Resume or Save in a second window no longer overwrites the walk with that window's stale fields.</li>
+                    <li>Non-numeric input such as NaN is rejected everywhere, the clock renders correctly under Arabic and Persian locales, and Save and Import say so when the history file could not be written.</li>
+                    <li>The plugin is now built with Java 21, which the 2024.3 platform requires.</li>
                     <li>The first-run profile dialog now saves the weekly goal, rest days, and streak-risk hour it shows.</li>
                     <li>The Settings page no longer reports unsaved changes in imperial mode just from opening it, and no longer nudges the stored weight and height on every OK.</li>
                     <li>The session-complete notification uses your display units instead of always saying km.</li>

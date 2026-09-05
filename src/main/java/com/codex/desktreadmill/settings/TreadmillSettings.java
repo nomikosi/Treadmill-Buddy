@@ -135,32 +135,43 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
         return sessionStore.getSessions();
     }
 
-    /** Saves the current workout and remembers it as the one to reload on the next IDE start. */
-    public void saveSession(SessionData session) {
-        state.lastSessionId = restoreSession(session);
+    /**
+     * Saves the current workout and remembers it as the one to reload on the
+     * next IDE start. All save and delete methods return whether the change
+     * reached disk; on false it lives in memory until a later write succeeds,
+     * and callers must not announce success.
+     */
+    public boolean saveSession(SessionData session) {
+        SessionData copy = withId(session);
+        boolean persisted = sessionStore.saveSession(copy);
+        state.lastSessionId = copy.id;
+        return persisted;
     }
 
     /**
      * Writes a session into the history without touching the "last session"
      * marker: an undo or an import must not make some arbitrary row the walk
-     * the clock shows after the next restart. Returns the id it was stored under.
+     * the clock shows after the next restart.
      */
-    public String restoreSession(SessionData session) {
+    public boolean restoreSession(SessionData session) {
+        return sessionStore.saveSession(withId(session));
+    }
+
+    private static SessionData withId(SessionData session) {
         SessionData copy = session.copy();
         if (copy.id == null || copy.id.isBlank()) {
             copy.id = String.valueOf(System.currentTimeMillis());
         }
-        sessionStore.saveSession(copy);
-        return copy.id;
+        return copy;
     }
 
     /**
      * Bulk save with a single store write; imports use this instead of N
      * single saves. History only - see {@link #restoreSession}.
      */
-    public void saveSessions(List<SessionData> sessions) {
+    public boolean saveSessions(List<SessionData> sessions) {
         if (sessions.isEmpty()) {
-            return;
+            return true;
         }
         List<SessionData> copies = new ArrayList<>();
         for (SessionData session : sessions) {
@@ -170,21 +181,23 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
             }
             copies.add(copy);
         }
-        sessionStore.saveSessions(copies);
+        return sessionStore.saveSessions(copies);
     }
 
-    public void deleteSession(String id) {
-        sessionStore.deleteSession(id);
+    public boolean deleteSession(String id) {
+        boolean persisted = sessionStore.deleteSession(id);
         if (id.equals(state.lastSessionId)) {
             state.lastSessionId = "";
         }
+        return persisted;
     }
 
-    public void deleteSessions(List<String> ids) {
-        sessionStore.deleteSessions(ids);
+    public boolean deleteSessions(List<String> ids) {
+        boolean persisted = sessionStore.deleteSessions(ids);
         if (ids.contains(state.lastSessionId)) {
             state.lastSessionId = "";
         }
+        return persisted;
     }
 
     public @Nullable SessionData findSession(String id) {

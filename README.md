@@ -14,7 +14,7 @@ Treadmill Buddy is a JetBrains IDE plugin for developers who use an under-desk t
 - Saves sessions so you can pause, resume, load, reset, or delete them later (deletion and reset are undoable from the notification).
 - Tracks elapsed time, countdown time, distance, steps, calories, incline, and targets.
 - Shows today / last-7-days / all-time totals, a 14-day distance chart, a six-month activity heatmap, and your walking-day streak (with 0-6 configurable rest days per week and an evening "streak at risk" hint).
-- Stores session history in `~/.treadmill-buddy/sessions.json`, shared across all JetBrains IDEs and safe across IDE reinstalls. A session resumed in another IDE keeps its newer state here.
+- Stores session history in `~/.treadmill-buddy/sessions.json`, shared across all JetBrains IDEs and safe across IDE reinstalls. Writes take a cross-process lock, so IDEs saving at the same moment never lose each other's walks; a session resumed or deleted in another IDE shows up here on the next focus, and a history file that cannot be parsed is set aside rather than overwritten.
 - Exports session history to CSV or JSON, imports both back (JSON restores the full model including speed segments), and exports single sessions as TCX workouts with per-minute trackpoints for Garmin Connect, Strava, and similar services (they arrive as a generic workout you can relabel as a walk, because the TCX format has no walking sport).
 - Supports optional daily and weekly goals (steps, distance, or calories) with progress bars, a status bar progress glyph, and a congratulation notification when you hit them.
 - Lets you save named speed presets and switch between them with one click; multi-speed sessions get a per-speed breakdown tooltip.
@@ -99,7 +99,7 @@ You can edit everything later from `Settings | Tools | Treadmill Buddy`; switchi
 ./gradlew verifyPlugin   # runs the IntelliJ Plugin Verifier
 ```
 
-The project targets IntelliJ Platform 2024.3+ (`sinceBuild 243`) and only depends on `com.intellij.modules.platform`, so it runs in IntelliJ IDEA, PyCharm, WebStorm, and every other JetBrains IDE.
+The project targets IntelliJ Platform 2024.3+ (`sinceBuild 243`) and only depends on `com.intellij.modules.platform`, so it runs in IntelliJ IDEA, PyCharm, WebStorm, and every other JetBrains IDE. Building needs a Java 21 JDK, the version the 2024.3 platform is compiled for; Gradle picks one up from the usual locations.
 
 ## Releasing
 

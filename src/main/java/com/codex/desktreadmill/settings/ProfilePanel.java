@@ -362,9 +362,11 @@ public final class ProfilePanel {
         };
     }
 
+    /** The field's number, or -1 when it is not a usable one: "NaN" parses but passes every range check. */
     private static double parseDouble(String text) {
         try {
-            return Double.parseDouble(text.trim().replace(',', '.'));
+            double value = Double.parseDouble(text.trim().replace(',', '.'));
+            return Double.isFinite(value) ? value : -1.0;
         } catch (NumberFormatException ignored) {
             return -1.0;
         }

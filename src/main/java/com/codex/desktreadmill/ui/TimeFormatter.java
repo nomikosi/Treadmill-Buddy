@@ -1,5 +1,7 @@
 package com.codex.desktreadmill.ui;
 
+import java.util.Locale;
+
 public final class TimeFormatter {
     private TimeFormatter() {
     }
@@ -12,7 +14,10 @@ public final class TimeFormatter {
         long minutes = (remainder % 3_600L) / 60L;
         long secs = remainder % 60L;
         String prefix = days > 0 ? days + "d" : "";
-        return new DisplayTime(prefix, String.format("%02d:%02d:%02d", hours, minutes, secs));
+        // Locale.ROOT: under Arabic or Persian locales the default locale
+        // renders %d with its own digits, which the seven-segment display
+        // cannot map to segments.
+        return new DisplayTime(prefix, String.format(Locale.ROOT, "%02d:%02d:%02d", hours, minutes, secs));
     }
 
     public static final class DisplayTime {

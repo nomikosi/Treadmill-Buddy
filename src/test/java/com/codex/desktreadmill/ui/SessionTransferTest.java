@@ -46,7 +46,7 @@ class SessionTransferTest {
         assertEquals(2, lines.length);
         List<String> header = SessionTransfer.parseCsvLine(lines[0]);
         List<String> fields = SessionTransfer.parseCsvLine(lines[1]);
-        return SessionTransfer.parseCsvSession(header, fields, 1);
+        return SessionTransfer.parseCsvSession(header, fields);
     }
 
     @Test
@@ -195,13 +195,16 @@ class SessionTransferTest {
                 + "150.0,300.0,0.00,false\n";
         String[] lines = legacy.split("\n");
         SessionData parsed = SessionTransfer.parseCsvSession(
-                SessionTransfer.parseCsvLine(lines[0]), SessionTransfer.parseCsvLine(lines[1]), 1);
+                SessionTransfer.parseCsvLine(lines[0]), SessionTransfer.parseCsvLine(lines[1]));
 
         assertNotNull(parsed);
         assertEquals("Old walk", parsed.name);
         assertEquals(1_800L, parsed.elapsedSeconds);
         assertEquals(0L, parsed.remainingSeconds, "a legacy row carries no countdown state");
-        assertFalse(parsed.id.isBlank(), "a legacy row still needs a generated id");
+        assertTrue(parsed.id.isBlank(), "a legacy row has no id of its own");
+        List<SessionData> selected = SessionTransfer.selectNewSessions(new ArrayList<>(List.of(parsed)), List.of());
+        assertEquals(1, selected.size());
+        assertFalse(selected.get(0).id.isBlank(), "a legacy row gets an id once it is taken in");
 
         // ...and that is precisely the row rehydration is meant to repair.
         UserProfile profile = new UserProfile();
@@ -217,9 +220,58 @@ class SessionTransferTest {
         String[] lines = withBom.split("\n");
         // importCsv strips the BOM before parsing the header; emulate that here.
         List<String> header = SessionTransfer.parseCsvLine(lines[0].replace("﻿", ""));
-        SessionData parsed = SessionTransfer.parseCsvSession(header, SessionTransfer.parseCsvLine(lines[1]), 1);
+        SessionData parsed = SessionTransfer.parseCsvSession(header, SessionTransfer.parseCsvLine(lines[1]));
         assertNotNull(parsed);
         assertEquals("Morning", parsed.name, "the BOM must not hide the name column");
+    }
+
+    @Test
+    void rowsWithDistinctIdsAreBothImportedEvenWithTheSameNameAndMinute() {
+        // Two walks started in the same minute under the default name: the
+        // minute+name fallback used to swallow the second one.
+        SessionData first = sampleSession();
+        first.id = "1";
+        SessionData second = sampleSession();
+        second.id = "2";
+        List<SessionData> selected = SessionTransfer.selectNewSessions(
+                new ArrayList<>(List.of(first, second)), List.of());
+        assertEquals(2, selected.size());
+    }
+
+    @Test
+    void aRowWhoseIdIsAlreadyInTheHistoryIsSkipped() {
+        SessionData known = sampleSession();
+        SessionData reimported = sampleSession();
+        reimported.name = "renamed since the export";
+        List<SessionData> selected = SessionTransfer.selectNewSessions(
+                new ArrayList<>(List.of(reimported)), List.of(known));
+        assertTrue(selected.isEmpty(), "same id means the same session, whatever the name says now");
+    }
+
+    @Test
+    void legacyRowsWithoutIdsFallBackToMinuteAndName() {
+        SessionData known = sampleSession();
+        SessionData legacyDuplicate = sampleSession();
+        legacyDuplicate.id = "";
+        SessionData legacyNew = sampleSession();
+        legacyNew.id = "";
+        legacyNew.name = "A different walk";
+        List<SessionData> selected = SessionTransfer.selectNewSessions(
+                new ArrayList<>(List.of(legacyDuplicate, legacyNew)), List.of(known));
+        assertEquals(1, selected.size());
+        assertEquals("A different walk", selected.get(0).name);
+        assertFalse(selected.get(0).id.isBlank());
+    }
+
+    @Test
+    void nonFiniteCsvNumbersFallBackToDefaults() {
+        List<String> header = SessionTransfer.parseCsvLine("name,speed_kmh,distance_km,elapsed_seconds");
+        SessionData parsed = SessionTransfer.parseCsvSession(header,
+                SessionTransfer.parseCsvLine("Walk,NaN,Infinity,600"));
+        assertNotNull(parsed);
+        // Double.parseDouble accepts both; neither may reach the store.
+        assertEquals(3.0, parsed.speedKmh, 0.0);
+        assertEquals(0.0, parsed.distanceKm, 0.0);
     }
 
     @Test
@@ -232,7 +284,7 @@ class SessionTransferTest {
     void malformedRowIsSkippedNotThrown() {
         List<String> header = SessionTransfer.parseCsvLine("name,mode,algorithm,created,speed_kmh");
         List<String> fields = SessionTransfer.parseCsvLine("Broken,Marathon,ACSM treadmill (default),not-a-date,abc");
-        assertNull(SessionTransfer.parseCsvSession(header, fields, 1));
+        assertNull(SessionTransfer.parseCsvSession(header, fields));
     }
 
     @Test

@@ -186,13 +186,136 @@ class SessionStoreTest {
     }
 
     @Test
-    void corruptFileIsToleratedAndOverwritten() throws IOException {
+    void anUnparseableFileIsMovedAsideNotOverwritten() throws IOException {
         Path file = tempDir.resolve("sessions.json");
         Files.writeString(file, "this is not json{{{");
         SessionStore store = new SessionStore(file);
         assertTrue(store.getSessions().isEmpty());
-        store.saveSession(session("a", "Fresh"));
+        assertTrue(store.saveSession(session("a", "Fresh")));
+
         assertEquals(1, new SessionStore(file).getSessions().size());
+        try (var siblings = Files.list(tempDir)) {
+            assertTrue(siblings.anyMatch(path -> path.getFileName().toString().startsWith("sessions.json.corrupt-")),
+                    "the unreadable history must be kept for the user to recover, not overwritten");
+        }
+    }
+
+    @Test
+    void aFileThatTurnsUnreadableDoesNotEmptyTheHistoryInMemory() throws IOException {
+        Path file = tempDir.resolve("sessions.json");
+        SessionStore store = new SessionStore(file);
+        store.saveSession(walked("a", 60L));
+        store.saveSession(walked("b", 60L));
+
+        Files.writeString(file, "{{{ truncated by a crash");
+        touchLater(file);
+
+        assertTrue(store.reload(), "the file changed, so the reload does look at it");
+        assertEquals(2, store.getSessions().size(), "an unreadable file must not read as 'everything was deleted'");
+        assertTrue(store.saveSession(walked("c", 60L)));
+        assertEquals(3, new SessionStore(file).getSessions().size());
+    }
+
+    @Test
+    void aDeleteInAnotherIdeIsPickedUpOnReload() throws IOException {
+        Path file = tempDir.resolve("sessions.json");
+        SessionStore first = new SessionStore(file);
+        first.saveSession(walked("a", 60L));
+        first.saveSession(walked("b", 60L));
+        SessionStore second = new SessionStore(file);
+        second.getSessions();
+
+        first.deleteSession("b");
+        touchLater(file);
+
+        assertTrue(second.reload());
+        assertNull(second.findSession("b"), "a session deleted elsewhere must not linger here");
+        assertNotNull(second.findSession("a"));
+    }
+
+    @Test
+    void writeDoesNotResurrectASessionDeletedInAnotherIde() throws IOException {
+        Path file = tempDir.resolve("sessions.json");
+        SessionStore first = new SessionStore(file);
+        first.saveSession(walked("a", 60L));
+        first.saveSession(walked("b", 60L));
+        SessionStore second = new SessionStore(file);
+        second.getSessions();
+
+        first.deleteSession("b");
+        touchLater(file);
+
+        // This store still holds "b" from its last read; writing that copy
+        // back used to undo the other IDE's delete.
+        second.saveSession(walked("c", 60L));
+        SessionStore reopened = new SessionStore(file);
+        assertNull(reopened.findSession("b"));
+        assertNotNull(reopened.findSession("a"));
+        assertNotNull(reopened.findSession("c"));
+    }
+
+    @Test
+    void duplicateIdsInTheFileCollapseToTheLastOne() throws IOException {
+        Path file = tempDir.resolve("sessions.json");
+        Files.writeString(file, "[{\"id\":\"a\",\"name\":\"first\",\"elapsedSeconds\":60},"
+                + "{\"id\":\"a\",\"name\":\"second\",\"elapsedSeconds\":120}]");
+        SessionStore store = new SessionStore(file);
+        assertEquals(1, store.getSessions().size());
+        assertEquals("second", store.findSession("a").name);
+    }
+
+    @Test
+    void nonFiniteNumbersNeverReachTheFile() throws IOException {
+        Path file = tempDir.resolve("sessions.json");
+        SessionStore store = new SessionStore(file);
+        SessionData poisoned = walked("a", 60L);
+        poisoned.speedKmh = Double.NaN;
+        poisoned.distanceKm = Double.POSITIVE_INFINITY;
+
+        // Gson refuses NaN and infinity; unsanitized, every later write would fail.
+        assertTrue(store.saveSession(poisoned));
+        SessionData read = new SessionStore(file).findSession("a");
+        assertEquals(3.0, read.speedKmh, 0.0);
+        assertEquals(0.0, read.distanceKm, 0.0);
+    }
+
+    @Test
+    void aSecondMigrationAttemptStillReportsFailureUntilTheWriteSucceeds() throws IOException {
+        Path blocker = tempDir.resolve("blocker");
+        Files.writeString(blocker, "not a directory");
+        SessionStore store = new SessionStore(blocker.resolve("sessions.json"));
+        List<SessionData> legacy = List.of(session("a", "Legacy"));
+
+        assertFalse(store.migrate(legacy));
+        // The sessions sit in memory from the first attempt; that is not the
+        // same as being on disk, and reporting success here would let the
+        // caller drop the only durable copy.
+        assertFalse(store.migrate(legacy));
+    }
+
+    @Test
+    void concurrentWritersFromTwoStoresLoseNothing() throws Exception {
+        Path file = tempDir.resolve("sessions.json");
+        SessionStore first = new SessionStore(file);
+        SessionStore second = new SessionStore(file);
+        int perWriter = 15;
+        Thread a = new Thread(() -> {
+            for (int i = 0; i < perWriter; i++) {
+                first.saveSession(walked("a" + i, 60L));
+            }
+        });
+        Thread b = new Thread(() -> {
+            for (int i = 0; i < perWriter; i++) {
+                second.saveSession(walked("b" + i, 60L));
+            }
+        });
+        a.start();
+        b.start();
+        a.join();
+        b.join();
+
+        assertEquals(2 * perWriter, new SessionStore(file).getSessions().size(),
+                "each write merges the other writer's sessions under the lock");
     }
 
     /** Pushes the file's timestamp forward so a change registers even on coarse filesystem clocks. */

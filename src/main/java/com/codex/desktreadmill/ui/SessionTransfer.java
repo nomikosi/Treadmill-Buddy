@@ -249,32 +249,70 @@ public final class SessionTransfer {
         // "Save as CSV UTF-8" in Excel prefixes a BOM, which would otherwise
         // make the first column name unrecognisable and drop every name.
         List<String> header = parseCsvLine(stripBom(lines.get(0)));
-        Set<String> existingIds = new HashSet<>();
-        Set<String> existingKeys = new HashSet<>();
-        for (SessionData session : settings.getSessions()) {
-            existingIds.add(session.id);
-            existingKeys.add(dedupeKey(session));
-        }
-        List<SessionData> toImport = new ArrayList<>();
+        List<SessionData> parsed = new ArrayList<>();
         for (int i = 1; i < lines.size(); i++) {
             if (lines.get(i).isBlank()) {
                 continue;
             }
-            SessionData session = parseCsvSession(header, parseCsvLine(lines.get(i)), i);
-            if (session == null || existingIds.contains(session.id) || existingKeys.contains(dedupeKey(session))) {
-                continue;
+            SessionData session = parseCsvSession(header, parseCsvLine(lines.get(i)));
+            if (session != null) {
+                parsed.add(session);
             }
-            rehydrateAfterImport(session, settings.getProfile());
-            existingIds.add(session.id);
-            existingKeys.add(dedupeKey(session));
-            toImport.add(session);
         }
-        // One store write for the whole file: saving row by row rewrites the
-        // JSON once per session, which freezes the EDT on a real backup.
-        settings.saveSessions(toImport);
+        List<SessionData> toImport = selectNewSessions(parsed, settings.getSessions());
+        for (SessionData session : toImport) {
+            rehydrateAfterImport(session, settings.getProfile());
+        }
+        return finishImport(project, settings, toImport);
+    }
+
+    /**
+     * The candidates the history doesn't have yet. A row that carries an id
+     * is matched on that id alone: two walks started in the same minute under
+     * the default name are distinct sessions, and matching them on minute and
+     * name used to drop the second one. Rows from exports written before the
+     * id column existed have no id; minute and name are the only identity
+     * such a row has, so they fall back to that and get an id here.
+     */
+    static List<SessionData> selectNewSessions(List<SessionData> candidates, List<SessionData> existing) {
+        Set<String> knownIds = new HashSet<>();
+        Set<String> knownKeys = new HashSet<>();
+        for (SessionData session : existing) {
+            knownIds.add(session.id);
+            knownKeys.add(dedupeKey(session));
+        }
+        List<SessionData> selected = new ArrayList<>();
+        int generated = 0;
+        for (SessionData candidate : candidates) {
+            boolean legacy = candidate.id == null || candidate.id.isBlank();
+            if (legacy) {
+                if (!knownKeys.add(dedupeKey(candidate))) {
+                    continue;
+                }
+                candidate.id = System.currentTimeMillis() + "-import-" + (++generated);
+            } else {
+                if (!knownIds.add(candidate.id)) {
+                    continue;
+                }
+                knownKeys.add(dedupeKey(candidate));
+            }
+            selected.add(candidate);
+        }
+        return selected;
+    }
+
+    /**
+     * One store write for the whole file: saving row by row rewrites the JSON
+     * once per session, which freezes the EDT on a real backup. The balloon
+     * says when that write did not reach disk rather than claiming success
+     * for sessions that exist only in memory.
+     */
+    private static int finishImport(@Nullable Project project, TreadmillSettings settings, List<SessionData> toImport) {
+        boolean persisted = settings.saveSessions(toImport);
         TreadmillNotifications.info(project,
                 TreadmillBundle.message("notification.title"),
-                TreadmillBundle.message("notification.import.done", toImport.size()));
+                TreadmillBundle.message(persisted ? "notification.import.done" : "notification.import.failed",
+                        toImport.size()));
         return toImport.size();
     }
 
@@ -306,33 +344,16 @@ public final class SessionTransfer {
         if (imported == null) {
             imported = List.of();
         }
-        Set<String> existingIds = new HashSet<>();
-        Set<String> existingKeys = new HashSet<>();
-        for (SessionData session : settings.getSessions()) {
-            existingIds.add(session.id);
-            existingKeys.add(dedupeKey(session));
-        }
-        List<SessionData> toImport = new ArrayList<>();
+        List<SessionData> candidates = new ArrayList<>();
         for (SessionData session : imported) {
             if (session == null || session.id == null || session.id.isBlank()) {
                 continue;
             }
-            // A hand-edited file can carry explicit nulls; the store repairs
-            // the same way when it reads its own file.
-            session.sanitize();
-            if (existingIds.contains(session.id) || existingKeys.contains(dedupeKey(session))) {
-                continue;
-            }
-            existingIds.add(session.id);
-            existingKeys.add(dedupeKey(session));
-            toImport.add(session);
+            // A hand-edited file can carry explicit nulls and NaN; the store
+            // repairs the same way when it reads its own file.
+            candidates.add(session.sanitize());
         }
-        // One store write for the whole file, matching the CSV path.
-        settings.saveSessions(toImport);
-        TreadmillNotifications.info(project,
-                TreadmillBundle.message("notification.title"),
-                TreadmillBundle.message("notification.import.done", toImport.size()));
-        return toImport.size();
+        return finishImport(project, settings, selectNewSessions(candidates, settings.getSessions()));
     }
 
     /**
@@ -368,9 +389,14 @@ public final class SessionTransfer {
         return (session.createdMillis / 60_000L) + "|" + session.name;
     }
 
-    static @Nullable SessionData parseCsvSession(List<String> header, List<String> fields, int rowIndex) {
+    /**
+     * One CSV row as a session, or null when the row is unusable. The id stays
+     * blank for rows from exports that predate the id column; the import
+     * assigns one once the row is accepted, see {@link #selectNewSessions}.
+     */
+    static @Nullable SessionData parseCsvSession(List<String> header, List<String> fields) {
         SessionData session = new SessionData();
-        session.id = System.currentTimeMillis() + "-import-" + rowIndex;
+        session.id = "";
         try {
             for (int i = 0; i < header.size() && i < fields.size(); i++) {
                 String value = fields.get(i).trim();
@@ -396,7 +422,7 @@ public final class SessionTransfer {
                     case "interval_phase_seconds" -> session.intervalPhaseSeconds = Long.parseLong(value);
                     case "remaining_seconds" -> session.remainingSeconds = Long.parseLong(value);
                     case "target_seconds" -> session.targetSeconds = Long.parseLong(value);
-                    case "id" -> session.id = value.isBlank() ? session.id : value;
+                    case "id" -> session.id = value;
                     default -> {
                     }
                 }
@@ -404,6 +430,8 @@ public final class SessionTransfer {
         } catch (RuntimeException malformedRow) {
             return null;
         }
+        // "NaN" and "Infinity" parse as numbers; they must not reach the store.
+        session.sanitize();
         if (session.name.isBlank() && session.elapsedSeconds == 0) {
             return null;
         }

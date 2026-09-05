@@ -76,8 +76,14 @@ public final class DigitalClockDisplay extends JComponent {
             if (ch == ':') {
                 drawColon(g, x, y, colonWidth, digitHeight, thickness);
                 x += colonWidth + gap;
-            } else if (Character.isDigit(ch)) {
-                drawDigit(g, ch - '0', x, y, digitWidth, digitHeight, thickness);
+                continue;
+            }
+            // Character.digit, not ch - '0': a non-ASCII digit (Arabic-Indic,
+            // for instance) is a digit too, and subtracting '0' from it would
+            // index the segment table out of bounds.
+            int digit = Character.digit(ch, 10);
+            if (digit >= 0) {
+                drawDigit(g, digit, x, y, digitWidth, digitHeight, thickness);
                 x += digitWidth + gap;
             }
         }

@@ -30,6 +30,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.LongSupplier;
 
@@ -290,7 +291,9 @@ public final class WorkoutEngine implements Disposable {
     }
 
     public void setSpeed(double speedKmh) {
-        if (session == null || session.completed) {
+        // NaN slips through range checks (every comparison is false) and would
+        // poison distance and calories; guard the engine, not just the fields.
+        if (session == null || session.completed || !Double.isFinite(speedKmh)) {
             return;
         }
         if (Math.abs(session.speedKmh - speedKmh) < 0.001) {
@@ -303,7 +306,7 @@ public final class WorkoutEngine implements Disposable {
     }
 
     public void setIncline(double inclinePercent) {
-        if (session == null || session.completed) {
+        if (session == null || session.completed || !Double.isFinite(inclinePercent)) {
             return;
         }
         if (Math.abs(session.inclinePercent - inclinePercent) < 0.001) {
@@ -334,11 +337,14 @@ public final class WorkoutEngine implements Disposable {
         }
         session.name = name.trim();
         dirty = true;
+        notifyStateChanged();
     }
 
-    public void persistNow() {
-        persist();
+    /** Returns whether the session reached disk; on false it stays in memory and is retried later. */
+    public boolean persistNow() {
+        boolean persisted = persist();
         notifyStateChanged();
+        return persisted;
     }
 
     /** Tells all listeners that the saved-session list changed outside the engine (delete, undo). */
@@ -388,8 +394,9 @@ public final class WorkoutEngine implements Disposable {
             return;
         }
         long now = clock.getAsLong();
-        long delta = now - lastTickMillis;
+        long previousTick = lastTickMillis;
         lastTickMillis = now;
+        long delta = now - previousTick;
         if (delta <= 0) {
             return;
         }
@@ -398,15 +405,36 @@ public final class WorkoutEngine implements Disposable {
             pauseInternal(true, TreadmillBundle.message("status.autoPaused.sleep"));
             return;
         }
-        if (shouldAutoPauseForIdle(now)) {
+        // Walking is credited up to the moment the idle threshold was crossed,
+        // not up to the previous tick: after a stalled EDT the crossing can sit
+        // well inside this delta, and the time before it was real walking.
+        long idleDeadline = idleDeadline();
+        boolean idle = now >= idleDeadline;
+        long creditUntil = idle ? Math.max(previousTick, idleDeadline) : now;
+        long secondsAdvanced = advance(creditUntil - previousTick, now);
+        if (!running) {
+            return; // A countdown completed inside the advance; completeSession did the rest.
+        }
+        if (idle) {
             pauseInternal(true, TreadmillBundle.message("status.autoPaused.idle", settings.getAutoPauseMinutes()));
             return;
         }
-        carryMillis += delta;
+        if (secondsAdvanced == 0) {
+            return;
+        }
+        if (now - lastPersistMillis >= PERSIST_INTERVAL_MILLIS) {
+            persist();
+        }
+        notifyStateChanged();
+    }
+
+    /** Credits {@code millis} of walking to the session; returns the whole seconds it advanced. */
+    private long advance(long millis, long now) {
+        carryMillis += millis;
         long secondsToAdvance = carryMillis / 1000L;
         carryMillis %= 1000L;
         if (secondsToAdvance == 0) {
-            return;
+            return 0L;
         }
         lastWalkMillis = now;
         dirty = true;
@@ -419,17 +447,20 @@ public final class WorkoutEngine implements Disposable {
                 WorkoutMath.advanceOneSecond(session, settings.getProfile());
                 if (mode.isCountdown() && session.remainingSeconds == 0L) {
                     completeSession();
-                    return;
+                    return secondsToAdvance;
                 }
             }
         }
         if (phaseSwitched) {
+            if (session.intervalWalking) {
+                // The chime is the prompt to step back on. Idle time piled up
+                // during the break, and without a fresh window the first tick
+                // of the walk block would auto-pause the session on the spot.
+                lastActivityMillis = now;
+            }
             announceIntervalPhase();
         }
-        if (now - lastPersistMillis >= PERSIST_INTERVAL_MILLIS) {
-            persist();
-        }
-        notifyStateChanged();
+        return secondsToAdvance;
     }
 
     private void announceIntervalPhase() {
@@ -519,9 +550,10 @@ public final class WorkoutEngine implements Disposable {
         }
     }
 
-    private boolean shouldAutoPauseForIdle(long now) {
+    /** The instant the inactivity auto-pause takes effect, or {@link Long#MAX_VALUE} while it cannot. */
+    private long idleDeadline() {
         if (keepRunningWhenIdle) {
-            return false;
+            return Long.MAX_VALUE;
         }
         // During an interval break the user has stepped off and stopped typing
         // - exactly what idle detection looks for. Pausing would freeze the
@@ -529,13 +561,13 @@ public final class WorkoutEngine implements Disposable {
         if (session != null
                 && SessionMode.fromId(session.modeId) == SessionMode.INTERVAL
                 && !session.intervalWalking) {
-            return false;
+            return Long.MAX_VALUE;
         }
         int idleMinutes = settings.getAutoPauseMinutes();
         if (idleMinutes == 0) {
-            return false;
+            return Long.MAX_VALUE;
         }
-        return now - lastActivityMillis >= idleMinutes * 60_000L;
+        return lastActivityMillis + idleMinutes * 60_000L;
     }
 
     private void onUserActivity(AWTEvent event) {
@@ -571,12 +603,14 @@ public final class WorkoutEngine implements Disposable {
         resume();
     }
 
-    private void persist() {
+    private boolean persist() {
         if (session == null) {
-            return;
+            return true;
         }
-        settings.saveSession(session);
-        dirty = false;
+        boolean persisted = settings.saveSession(session);
+        // A failed write leaves the session dirty, so shutdown and the next
+        // transition try again instead of believing it is safe on disk.
+        dirty = !persisted;
         lastPersistMillis = clock.getAsLong();
         for (Listener listener : listeners) {
             listener.sessionsPersisted();
@@ -587,6 +621,7 @@ public final class WorkoutEngine implements Disposable {
             maybeCelebrateDailyGoal(history);
             maybeCelebrateWeeklyGoal(history);
         }
+        return persisted;
     }
 
     private void maybeCelebrateDailyGoal(List<SessionData> history) {
@@ -751,7 +786,7 @@ public final class WorkoutEngine implements Disposable {
         long hours = seconds / 3600;
         long minutes = seconds % 3600 / 60;
         if (hours > 0) {
-            return String.format("%dh %02dm", hours, minutes);
+            return String.format(Locale.ROOT, "%dh %02dm", hours, minutes);
         }
         // Sub-minute walks would otherwise both render as a meaningless "0m".
         return minutes > 0 ? minutes + "m" : seconds + "s";

@@ -110,7 +110,68 @@ class WorkoutEngineTest {
         engine.tick();
         assertFalse(engine.isRunning());
         assertTrue(engine.isAutoPaused());
-        assertEquals(30L, engine.getSession().elapsedSeconds);
+        // Walking counts up to the threshold itself (60 s after the last
+        // activity), not merely up to the previous tick.
+        assertEquals(60L, engine.getSession().elapsedSeconds);
+    }
+
+    @Test
+    void anIdleCrossingInsideAStalledDeltaCreditsWalkingUpToTheThreshold() {
+        settings.setAutoPauseMinutes(1);
+        engine.startSession(marathonSession());
+        nowMillis += 59_000;
+        engine.tick();
+        assertEquals(59L, engine.getSession().elapsedSeconds);
+        // The EDT stalls for 50 s: one second of that was still inside the
+        // idle window and is real walking; the other 49 are not.
+        nowMillis += 50_000;
+        engine.tick();
+        assertTrue(engine.isAutoPaused());
+        assertEquals(60L, engine.getSession().elapsedSeconds);
+    }
+
+    @Test
+    void theWalkBlockAfterABreakStartsWithAFreshIdleWindow() {
+        settings.setAutoPauseMinutes(1);
+        SessionData session = marathonSession();
+        session.modeId = SessionMode.INTERVAL.name();
+        session.intervalWalkSeconds = 30L;
+        session.intervalBreakSeconds = 120L;
+        engine.startSession(session);
+
+        nowMillis += 30_000;
+        engine.tick();
+        assertFalse(engine.getSession().intervalWalking);
+        // Two silent minutes of break, then the chime.
+        nowMillis += 50_000;
+        engine.tick();
+        nowMillis += 50_000;
+        engine.tick();
+        nowMillis += 20_000;
+        engine.tick();
+        assertTrue(engine.getSession().intervalWalking);
+
+        // The first ticks of the walk block used to auto-pause immediately:
+        // the last keystroke was minutes ago, from before the break.
+        nowMillis += 30_000;
+        engine.tick();
+        assertTrue(engine.isRunning(), "a walk block must not start auto-paused");
+        assertEquals(60L, engine.getSession().elapsedSeconds);
+    }
+
+    @Test
+    void nonFiniteSpeedAndInclineAreIgnored() {
+        engine.startSession(marathonSession());
+        engine.setSpeed(Double.NaN);
+        engine.setIncline(Double.POSITIVE_INFINITY);
+        assertEquals(5.0, engine.getSession().speedKmh, 0.0);
+        assertEquals(0.0, engine.getSession().inclinePercent, 0.0);
+    }
+
+    @Test
+    void persistNowReportsWhetherTheWalkReachedDisk() {
+        engine.startSession(marathonSession());
+        assertTrue(engine.persistNow());
     }
 
     @Test

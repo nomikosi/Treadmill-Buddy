@@ -28,7 +28,9 @@ dependencies {
 
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(17)
+        // IntelliJ Platform 2024.2+ runs on and is compiled for Java 21;
+        // verifyPluginProjectConfiguration flags anything lower.
+        languageVersion = JavaLanguageVersion.of(21)
     }
 }
 
