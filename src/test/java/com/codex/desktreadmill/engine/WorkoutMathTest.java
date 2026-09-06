@@ -75,6 +75,69 @@ class WorkoutMathTest {
     }
 
     @Test
+    void resumedImportedStepsArePreservedAndOnlyNewDistanceIsEstimated() {
+        SessionData session = new SessionData();
+        session.elapsedSeconds = 600;
+        session.distanceKm = 1.0;
+        session.steps = 4000;
+        session.speedKmh = 3.6;
+        for (int i = 0; i < 3600; i++) {
+            WorkoutMath.advanceOneSecond(session, profile());
+            assertTrue(session.steps >= 4000);
+        }
+        assertEquals(4000 + WorkoutMath.stepsForDistance(3.6, 170), session.steps);
+        assertEquals(4.6, session.distanceKm, 1e-9);
+    }
+
+    @Test
+    void heightChangesAffectOnlyFutureSteps() {
+        UserProfile profile = profile();
+        SessionData session = new SessionData();
+        session.speedKmh = 3.6;
+        for (int i = 0; i < 600; i++) {
+            WorkoutMath.advanceOneSecond(session, profile);
+        }
+        long before = session.steps;
+        profile.heightCm = 200;
+        for (int i = 0; i < 600; i++) {
+            long previous = session.steps;
+            WorkoutMath.advanceOneSecond(session, profile);
+            assertTrue(session.steps >= previous);
+        }
+        long expected = Math.round(600 / WorkoutMath.stepLengthMeters(170)
+                + 600 / WorkoutMath.stepLengthMeters(200));
+        assertTrue(session.steps > before);
+        assertEquals(expected, session.steps);
+    }
+
+    @Test
+    void copyingBetweenEveryTickRetainsFractionalSteps() {
+        SessionData continuous = new SessionData();
+        continuous.speedKmh = 0.5;
+        SessionData copied = continuous.copy();
+        for (int i = 0; i < 1000; i++) {
+            WorkoutMath.advanceOneSecond(continuous, profile());
+            WorkoutMath.advanceOneSecond(copied, profile());
+            copied = copied.copy().sanitize();
+        }
+        assertEquals(WorkoutMath.stepsForDistance(0.5 * 1000 / 3600, 170), copied.steps);
+        assertEquals(continuous.steps, copied.steps);
+        assertEquals(continuous.stepRemainder, copied.stepRemainder);
+    }
+
+    @Test
+    void invalidStepRemaindersFromForeignFilesAreDiscarded() {
+        for (double value : new double[]{Double.NaN, Double.POSITIVE_INFINITY, -0.51, 0.5, 100}) {
+            SessionData session = new SessionData();
+            session.stepRemainder = value;
+            assertEquals(0.0, session.sanitize().stepRemainder);
+        }
+        SessionData valid = new SessionData();
+        valid.stepRemainder = -0.5;
+        assertEquals(-0.5, valid.sanitize().stepRemainder);
+    }
+
+    @Test
     void intervalBreakBlocksDontAccumulateMetrics() {
         SessionData session = new SessionData();
         session.modeId = SessionMode.INTERVAL.name();

@@ -27,6 +27,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Durable session history shared across all JetBrains IDEs. Sessions live in
@@ -35,13 +38,12 @@ import java.util.Set;
  *
  * <p>The file is the source of truth; this store holds the last state it
  * synced plus its own pending changes. Every write takes a cross-process lock
- * on a sidecar file, re-reads the history if it changed on disk, folds it in
+ * on a sidecar file, re-reads the history, folds it in
  * - the disk copy wins for every session except the ones changed here since
  * the last successful write, and a session that vanished from the file was
  * deleted in another IDE and is dropped here too - then stages the result in
- * a uniquely named temp file and moves it into place. The re-read is skipped
- * when modification time and size are unchanged, so the routine 30-second
- * autosave doesn't re-parse the whole history on the EDT.</p>
+ * a uniquely named temp file and moves it into place. Timestamps only avoid
+ * unnecessary focus refreshes; they never decide whether a write merges.</p>
  *
  * <p>A file that exists but cannot be parsed is never treated as an empty
  * history: merges leave memory alone, and the next write moves the corrupt
@@ -50,11 +52,9 @@ import java.util.Set;
  * store that silently keeps everything in memory looks healthy right up
  * until the IDE closes.</p>
  */
-public final class SessionStore {
+public final class SessionStore implements AutoCloseable {
     private static final Logger LOG = Logger.getInstance(SessionStore.class);
-    /** How long a write waits for another IDE's write to finish before going ahead without the lock. */
-    private static final long LOCK_WAIT_MILLIS = 1_500L;
-    private static final long LOCK_RETRY_MILLIS = 20L;
+    private static final long RETRY_DELAY_MILLIS = 1_000L;
     private static final DateTimeFormatter CORRUPT_SUFFIX = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
     private final Path file;
@@ -72,10 +72,20 @@ public final class SessionStore {
     /** The file exists but could not be parsed the last time it was read. */
     private boolean diskCorrupt;
     private @Nullable Runnable writeFailureCallback;
+    private final @Nullable ScheduledExecutorService retryExecutor;
+    private @Nullable ScheduledFuture<?> pendingRetry;
+    private long retryDelayMillis = RETRY_DELAY_MILLIS;
+    private boolean closed;
 
     public SessionStore(Path file) {
+        this(file, null);
+    }
+
+    /** The optional retry executor is owned by this store and shut down on close. */
+    public SessionStore(Path file, @Nullable ScheduledExecutorService retryExecutor) {
         this.file = file;
         this.lockFile = file.resolveSibling(file.getFileName() + ".lock");
+        this.retryExecutor = retryExecutor;
     }
 
     /** Invoked (once per failure, on the caller's thread) when a write doesn't reach disk. */
@@ -218,11 +228,13 @@ public final class SessionStore {
             return;
         }
         loaded = true;
+        // Record metadata before reading: a concurrent replacement must leave
+        // this snapshot eligible for another refresh, not label old bytes as new.
+        rememberDiskState();
         List<SessionData> onDisk = readFile();
         if (onDisk != null) {
             sessions.addAll(onDisk);
         }
-        rememberDiskState();
     }
 
     /**
@@ -234,6 +246,7 @@ public final class SessionStore {
      * wiped history on the next write.
      */
     private void mergeFromDisk() {
+        rememberDiskState();
         List<SessionData> onDisk = readFile();
         if (onDisk != null) {
             Set<String> diskIds = new HashSet<>();
@@ -251,7 +264,6 @@ public final class SessionStore {
             }
             sessions.removeIf(session -> !diskIds.contains(session.id) && !dirtyIds.contains(session.id));
         }
-        rememberDiskState();
     }
 
     private void rememberDiskState() {
@@ -314,12 +326,10 @@ public final class SessionStore {
         try {
             Files.createDirectories(file.getParent());
             try (ProcessLock ignored = acquireLock()) {
-                // Merge what another IDE instance wrote since we last synced -
-                // but only when the file actually changed, so the routine
-                // autosave isn't a full read-parse of the history every 30 s.
-                if (diskChangedSinceLastSync()) {
-                    mergeFromDisk();
-                }
+                // A cached timestamp/size cannot prove our bytes are current:
+                // another writer can replace the file during an unlocked read,
+                // or replace it with the same size on a coarse filesystem clock.
+                mergeFromDisk();
                 if (diskCorrupt) {
                     preserveCorruptFile();
                 }
@@ -335,6 +345,11 @@ public final class SessionStore {
             dirtyIds.clear();
             deletedIds.clear();
             diskCorrupt = false;
+            retryDelayMillis = RETRY_DELAY_MILLIS;
+            if (pendingRetry != null) {
+                pendingRetry.cancel(false);
+                pendingRetry = null;
+            }
             return true;
         } catch (IOException exception) {
             // Sessions stay in memory and the next successful write persists
@@ -342,6 +357,7 @@ public final class SessionStore {
             // the IDE closes, then everything since the failure is gone" is
             // the worst possible way to find out.
             LOG.warn("Could not write " + file + "; sessions are only in memory", exception);
+            scheduleRetry();
             if (writeFailureCallback != null) {
                 writeFailureCallback.run();
             }
@@ -349,42 +365,60 @@ public final class SessionStore {
         }
     }
 
-    /**
-     * Two IDEs saving at the same moment would each read, merge, and write
-     * their own view; the lock serialises them so the second one sees the
-     * first one's result. Held for the few milliseconds of a write, and given
-     * up after a bounded wait rather than freezing the EDT behind a stuck
-     * process - an unlocked write still merges, it just reopens the tiny
-     * race window the lock closes.
-     */
-    private @Nullable ProcessLock acquireLock() {
-        long deadline = System.currentTimeMillis() + LOCK_WAIT_MILLIS;
-        while (true) {
-            FileChannel channel = null;
-            try {
-                channel = FileChannel.open(lockFile, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
-                FileLock lock = channel.tryLock();
-                if (lock != null) {
-                    return new ProcessLock(channel, lock);
-                }
-            } catch (OverlappingFileLockException heldElsewhereInThisJvm) {
-                // Another store instance in this process is mid-write; wait like for another process.
-            } catch (IOException exception) {
-                LOG.warn("Could not lock " + lockFile + "; writing without the cross-process lock", exception);
-                closeQuietly(channel);
-                return null;
+    /** Never wait on the EDT or write without the lock; contention leaves changes pending. */
+    private ProcessLock acquireLock() throws IOException {
+        FileChannel channel = FileChannel.open(lockFile, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+        try {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new IOException("Interrupted before locking " + lockFile);
             }
+            FileLock lock = channel.tryLock();
+            if (lock == null) {
+                throw new IOException("History lock is held by another writer: " + lockFile);
+            }
+            return new ProcessLock(channel, lock);
+        } catch (OverlappingFileLockException exception) {
             closeQuietly(channel);
-            if (System.currentTimeMillis() >= deadline) {
-                LOG.warn("Gave up waiting for " + lockFile + "; writing without the cross-process lock");
-                return null;
+            throw new IOException("History lock is held by another writer: " + lockFile, exception);
+        } catch (IOException | RuntimeException exception) {
+            closeQuietly(channel);
+            throw exception;
+        }
+    }
+
+    /** Retries all pending saves and deletions, including changes to a session no longer on the clock. */
+    public synchronized boolean flushPendingWrites() {
+        return dirtyIds.isEmpty() && deletedIds.isEmpty() || write();
+    }
+
+    private void scheduleRetry() {
+        if (retryExecutor == null || closed || pendingRetry != null) {
+            return;
+        }
+        pendingRetry = retryExecutor.schedule(() -> {
+            synchronized (this) {
+                pendingRetry = null;
+                if (!closed) {
+                    flushPendingWrites();
+                }
             }
-            try {
-                Thread.sleep(LOCK_RETRY_MILLIS);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                return null;
-            }
+        }, retryDelayMillis, TimeUnit.MILLISECONDS);
+        retryDelayMillis = Math.min(60_000L, retryDelayMillis * 2);
+    }
+
+    @Override
+    public synchronized void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        flushPendingWrites();
+        if (pendingRetry != null) {
+            pendingRetry.cancel(false);
+            pendingRetry = null;
+        }
+        if (retryExecutor != null) {
+            retryExecutor.shutdownNow();
         }
     }
 

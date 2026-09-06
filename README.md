@@ -79,16 +79,30 @@ You can edit everything later from `Settings | Tools | Treadmill Buddy`; switchi
 ## Workout Behavior
 
 - Changing treadmill speed or incline during a workout updates future distance, calorie, and countdown estimates.
+- Pending timer ticks are settled before speed, incline, or calorie algorithm changes, so elapsed activity keeps its previous rate.
+- Resuming preserves recorded step totals. Height changes affect only newly estimated steps, and fractional steps survive saves and restarts.
+- Switching display units preserves the exact workout speed until you edit it.
+- Profile measurements, distance goals, and weight targets also retain their exact metric values across repeated unit switches.
+- Start, Resume, Save for a paused session, and previews use the same input validation. Invalid inputs leave a paused session paused.
+- Calorie, weight, and interval targets can be edited while paused and apply on Resume or Save. Changing interval lengths starts a new walking block without clearing recorded totals; interval lengths use whole minutes.
+- Paused edits merge with newer saved activity from another IDE: only fields you changed override its configuration, while its recorded progress is retained.
+- Small positive goals use extra decimal places when needed, so switching units never rounds them to an invalid zero.
 - Changing calorie algorithm during `Calorie burn` or `KG burn` updates the remaining countdown time.
 - Invalid speed, incline, or target values are flagged inline on the field as you type.
 - Speeds above `20 km/h` show the warning: `slow down coyote beep beep!!`
 - Keyboard and mouse activity keep the session alive; after the idle timeout it auto-pauses, and typing resumes it (a lone modifier key such as Shift does not count as typing).
 - If the machine goes to sleep, the session auto-pauses instead of crediting the slept time.
+- Pause and Resume preserve partial seconds, including after loading a session or restarting the IDE.
+- New walking activity is recorded by day, so resuming an older session or walking across midnight contributes to the correct daily goals, charts, and streaks. Historical walks without a daily breakdown keep their original creation-date attribution.
+- If another IDE holds the history lock, pending saves and deletions are retried in the background; the plugin never writes without the lock.
 - Starting a new session, switching mode, or loading another session while one is running pauses and saves the running one first, so no walked time is lost.
 - `Reset` on a session with walked time asks for confirmation, because it clears that walk from the history; the notification offers an undo.
 - Session completion shows a notification (no modal dialog interrupting your typing).
 - Saved sessions appear in a list with duration, distance, calories, and date; double-click or press Enter to load one, use the toolbar to delete, import CSV/JSON, or export sessions as CSV, JSON, or TCX. The list shows the 25 most recent sessions with a Show All toggle, and refreshes when the IDE regains focus so walks saved in another JetBrains IDE appear immediately.
 - The CSV export always uses metric columns (`speed_kmh`, `distance_km`), regardless of the display units, so exported data stays comparable, and re-importing skips sessions you already have.
+- CSV names can contain commas, quotes, and line breaks. Malformed quoting rejects the import before any sessions are saved.
+- History cleanup uses the latest recorded activity date and keeps the session currently on the clock, including while paused.
+- TCX exports use speed segments when they cover the whole workout; sessions with incomplete speed histories use evenly interpolated distance across the full duration.
 
 ## Build and Development
 
@@ -102,6 +116,8 @@ You can edit everything later from `Settings | Tools | Treadmill Buddy`; switchi
 The project targets IntelliJ Platform 2024.3+ (`sinceBuild 243`) and only depends on `com.intellij.modules.platform`, so it runs in IntelliJ IDEA, PyCharm, WebStorm, and every other JetBrains IDE. Building needs a Java 21 JDK, the version the 2024.3 platform is compiled for; Gradle picks one up from the usual locations.
 
 ## Releasing
+
+Release notes are maintained in the [plugin descriptor](src/main/resources/META-INF/plugin.xml); pending changes appear under Unreleased until the next version is prepared.
 
 Pushing a `v*` tag runs the release workflow, which builds, signs, and publishes the plugin to JetBrains Marketplace. It needs these repository secrets: `PUBLISH_TOKEN` (Marketplace permanent token), `CERTIFICATE_CHAIN`, `PRIVATE_KEY`, and `PRIVATE_KEY_PASSWORD` (plugin signing, see the [JetBrains signing guide](https://plugins.jetbrains.com/docs/intellij/plugin-signing.html)).
 

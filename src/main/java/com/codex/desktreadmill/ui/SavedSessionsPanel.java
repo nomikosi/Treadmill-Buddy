@@ -3,6 +3,7 @@ package com.codex.desktreadmill.ui;
 import com.codex.desktreadmill.TreadmillBundle;
 import com.codex.desktreadmill.TreadmillNotifications;
 import com.codex.desktreadmill.engine.WorkoutEngine;
+import com.codex.desktreadmill.engine.HistoryCleanup;
 import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.SessionMode;
 import com.codex.desktreadmill.model.UnitSystem;
@@ -40,7 +41,6 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -237,25 +237,12 @@ public final class SavedSessionsPanel {
         if (session == null) {
             return;
         }
-        SessionData deleted = session.copy();
-        // Deleting clears the "last session" marker when it pointed here;
-        // undo puts it back only in that case, so undoing some old row never
-        // makes it the walk the clock opens with after the next restart.
-        boolean wasLast = deleted.id.equals(settings.getLastSessionId());
-        settings.deleteSession(session.id);
-        engine.clearSessionIf(session.id);
-        engine.notifySessionsChanged();
+        WorkoutEngine.Deletion deletion = engine.deleteSessions(List.of(session.id));
         TreadmillNotifications.withUndo(
                 project,
-                TreadmillBundle.message("notification.session.deleted", StringUtil.escapeXmlEntities(deleted.name)),
-                () -> {
-                    if (wasLast) {
-                        settings.saveSession(deleted);
-                    } else {
-                        settings.restoreSession(deleted);
-                    }
-                    engine.notifySessionsChanged();
-                }
+                TreadmillBundle.message(deletion.persisted() ? "notification.session.deleted"
+                        : "notification.session.deleteFailed", StringUtil.escapeXmlEntities(session.name)),
+                () -> engine.undoDeletion(deletion)
         );
     }
 
@@ -275,13 +262,12 @@ public final class SavedSessionsPanel {
         if (days <= 0) {
             return;
         }
-        long cutoffMillis = System.currentTimeMillis() - days * 86_400_000L;
-        List<String> oldIds = new ArrayList<>();
-        for (SessionData session : settings.getSessions()) {
-            if (session.createdMillis > 0 && session.createdMillis < cutoffMillis) {
-                oldIds.add(session.id);
-            }
-        }
+        long cutoffMillis = java.time.LocalDate.now().minusDays(days).atStartOfDay(ZoneId.systemDefault())
+                .toInstant().toEpochMilli();
+        engine.reloadSessions();
+        SessionData current = engine.getSession();
+        List<String> oldIds = HistoryCleanup.candidates(settings.getSessions(),
+                current == null ? null : current.id, cutoffMillis);
         if (oldIds.isEmpty()) {
             Messages.showInfoMessage(project,
                     TreadmillBundle.message("sessions.deleteOld.none", days),
@@ -294,15 +280,18 @@ public final class SavedSessionsPanel {
         if (answer != Messages.YES) {
             return;
         }
-        settings.deleteSessions(oldIds);
-        SessionData active = engine.getSession();
-        if (active != null && oldIds.contains(active.id)) {
-            engine.clearSession();
-        }
-        engine.notifySessionsChanged();
+        // Another IDE or a nested event loop may have resumed a candidate while
+        // the confirmation was open. Recheck age and protect the current clock.
+        engine.reloadSessions();
+        current = engine.getSession();
+        List<String> stillOld = HistoryCleanup.candidates(settings.getSessions(),
+                current == null ? null : current.id, cutoffMillis);
+        oldIds = oldIds.stream().filter(stillOld::contains).toList();
+        WorkoutEngine.Deletion deletion = engine.deleteSessions(oldIds);
         TreadmillNotifications.info(project,
                 TreadmillBundle.message("notification.title"),
-                TreadmillBundle.message("notification.sessions.deletedOld", oldIds.size(), days));
+                TreadmillBundle.message(deletion.persisted() ? "notification.sessions.deletedOld"
+                        : "notification.sessions.deleteFailed", oldIds.size(), days));
     }
 
     private String describeSession(SessionData session) {

@@ -1,6 +1,7 @@
 package com.codex.desktreadmill.engine;
 
 import com.codex.desktreadmill.model.SessionData;
+import com.codex.desktreadmill.model.DailyActivity;
 import org.jetbrains.annotations.Nullable;
 
 import java.time.DayOfWeek;
@@ -24,23 +25,35 @@ public final class SessionStats {
     }
 
     /**
-     * Sums distance, steps, and calories across all sessions created at or after
-     * {@code cutoffMillis}. Sessions without a creation timestamp only count when
-     * {@code cutoffMillis} is zero (all-time totals).
+     * Sums activity on or after the cutoff. Legacy sessions have no dated
+     * breakdown and retain their original creation-date attribution.
      */
     public static Totals totalsSince(List<SessionData> sessions, long cutoffMillis) {
         Totals totals = new Totals();
         for (SessionData session : sessions) {
-            if (cutoffMillis > 0 && session.createdMillis < cutoffMillis) {
-                continue;
-            }
             if (session.elapsedSeconds == 0) {
                 continue;
             }
-            totals.distanceKm += session.distanceKm;
-            totals.steps += session.steps;
-            totals.calories += session.calories;
-            totals.sessionCount++;
+            if (cutoffMillis == 0) {
+                totals.distanceKm += session.distanceKm;
+                totals.steps += session.steps;
+                totals.calories += session.calories;
+                totals.sessionCount++;
+                continue;
+            }
+            boolean counted = false;
+            for (DailyActivity day : activityDays(session)) {
+                if (day.dateMillis < cutoffMillis || day.elapsedSeconds == 0) {
+                    continue;
+                }
+                totals.distanceKm += day.distanceKm;
+                totals.steps += day.steps;
+                totals.calories += day.calories;
+                counted = true;
+            }
+            if (counted) {
+                totals.sessionCount++;
+            }
         }
         return totals;
     }
@@ -51,14 +64,11 @@ public final class SessionStats {
      */
     public static double[] dailyDistanceKm(List<SessionData> sessions, LocalDate today, ZoneId zone, int days) {
         double[] daily = new double[days];
-        for (SessionData session : sessions) {
-            if (session.createdMillis <= 0 || session.elapsedSeconds == 0) {
-                continue;
-            }
-            LocalDate date = Instant.ofEpochMilli(session.createdMillis).atZone(zone).toLocalDate();
+        for (Map.Entry<Long, Double> entry : distanceByEpochDay(sessions, zone).entrySet()) {
+            LocalDate date = LocalDate.ofEpochDay(entry.getKey());
             long daysAgo = ChronoUnit.DAYS.between(date, today);
             if (daysAgo >= 0 && daysAgo < days) {
-                daily[days - 1 - (int) daysAgo] += session.distanceKm;
+                daily[days - 1 - (int) daysAgo] += entry.getValue();
             }
         }
         return daily;
@@ -67,12 +77,34 @@ public final class SessionStats {
     /** Distance walked per day keyed by epoch day, across the full history. */
     public static Map<Long, Double> distanceByEpochDay(List<SessionData> sessions, ZoneId zone) {
         Map<Long, Double> byDay = new HashMap<>();
+        for (Map.Entry<Long, DayTotals> entry : totalsByDay(sessions, zone).entrySet()) {
+            byDay.put(entry.getKey(), entry.getValue().distanceKm);
+        }
+        return byDay;
+    }
+
+    private static List<DailyActivity> activityDays(SessionData session) {
+        return session.activityDays.isEmpty()
+                ? List.of(new DailyActivity(session.createdMillis, session.elapsedSeconds,
+                        session.distanceKm, session.steps, session.calories))
+                : session.activityDays;
+    }
+
+    private static Map<Long, DayTotals> totalsByDay(List<SessionData> sessions, ZoneId zone) {
+        Map<Long, DayTotals> byDay = new HashMap<>();
         for (SessionData session : sessions) {
-            if (session.createdMillis <= 0 || session.elapsedSeconds == 0) {
+            if (session.elapsedSeconds == 0) {
                 continue;
             }
-            long epochDay = Instant.ofEpochMilli(session.createdMillis).atZone(zone).toLocalDate().toEpochDay();
-            byDay.merge(epochDay, session.distanceKm, Double::sum);
+            for (DailyActivity day : activityDays(session)) {
+                if (day.dateMillis <= 0 || day.elapsedSeconds == 0) {
+                    continue;
+                }
+                long epochDay = Instant.ofEpochMilli(day.dateMillis).atZone(zone).toLocalDate().toEpochDay();
+                DayTotals totals = byDay.computeIfAbsent(epochDay, ignored -> new DayTotals());
+                totals.distanceKm += day.distanceKm;
+                totals.steps += day.steps;
+            }
         }
         return byDay;
     }
@@ -117,8 +149,6 @@ public final class SessionStats {
     /** Personal records across the full session history. */
     public static Records records(List<SessionData> sessions, ZoneId zone) {
         Records records = new Records();
-        Map<Long, Double> kmByDay = new HashMap<>();
-        Map<Long, Long> stepsByDay = new HashMap<>();
         for (SessionData session : sessions) {
             if (session.elapsedSeconds == 0) {
                 continue;
@@ -127,20 +157,13 @@ public final class SessionStats {
                 records.longestSessionSeconds = session.elapsedSeconds;
                 records.longestSessionName = session.name;
             }
-            if (session.createdMillis > 0) {
-                long epochDay = Instant.ofEpochMilli(session.createdMillis).atZone(zone).toLocalDate().toEpochDay();
-                kmByDay.merge(epochDay, session.distanceKm, Double::sum);
-                stepsByDay.merge(epochDay, session.steps, Long::sum);
-            }
         }
-        for (Map.Entry<Long, Double> entry : kmByDay.entrySet()) {
-            if (entry.getValue() > records.bestDayDistanceKm) {
-                records.bestDayDistanceKm = entry.getValue();
+        for (Map.Entry<Long, DayTotals> entry : totalsByDay(sessions, zone).entrySet()) {
+            if (entry.getValue().distanceKm > records.bestDayDistanceKm) {
+                records.bestDayDistanceKm = entry.getValue().distanceKm;
                 records.bestDayDistanceEpochDay = entry.getKey();
             }
-        }
-        for (Map.Entry<Long, Long> entry : stepsByDay.entrySet()) {
-            records.bestDaySteps = Math.max(records.bestDaySteps, entry.getValue());
+            records.bestDaySteps = Math.max(records.bestDaySteps, entry.getValue().steps);
         }
         return records;
     }
@@ -175,25 +198,13 @@ public final class SessionStats {
      *                        to consider every day (0 and -1 are real days)
      */
     public static DayTotals bestDay(List<SessionData> sessions, ZoneId zone, long excludeEpochDay) {
-        Map<Long, Double> kmByDay = new HashMap<>();
-        Map<Long, Long> stepsByDay = new HashMap<>();
-        for (SessionData session : sessions) {
-            if (session.createdMillis <= 0 || session.elapsedSeconds == 0) {
-                continue;
-            }
-            long epochDay = Instant.ofEpochMilli(session.createdMillis).atZone(zone).toLocalDate().toEpochDay();
-            if (epochDay == excludeEpochDay) {
-                continue;
-            }
-            kmByDay.merge(epochDay, session.distanceKm, Double::sum);
-            stepsByDay.merge(epochDay, session.steps, Long::sum);
-        }
         DayTotals best = new DayTotals();
-        for (double km : kmByDay.values()) {
-            best.distanceKm = Math.max(best.distanceKm, km);
-        }
-        for (long steps : stepsByDay.values()) {
-            best.steps = Math.max(best.steps, steps);
+        for (Map.Entry<Long, DayTotals> entry : totalsByDay(sessions, zone).entrySet()) {
+            if (entry.getKey() == excludeEpochDay) {
+                continue;
+            }
+            best.distanceKm = Math.max(best.distanceKm, entry.getValue().distanceKm);
+            best.steps = Math.max(best.steps, entry.getValue().steps);
         }
         return best;
     }

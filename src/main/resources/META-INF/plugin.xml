@@ -36,6 +36,20 @@ limitations under the License.
 
     <change-notes><![CDATA[
         <ul>
+            <li>Unreleased:
+                <ul>
+                    <li>Paused Save and Resume keep newer progress saved by another IDE and merge only fields edited locally, including speed, name, and targets. Completed or deleted sessions are not restarted by stale forms.</li>
+                    <li>History writes always require the cross-process lock and merge the latest file. Pending saves and deletions retry in the background when the lock or file is unavailable.</li>
+                    <li>Loading the session already on the clock preserves its live progress. Deletion and Undo now coordinate with the current session so later saves do not restore deleted history.</li>
+                    <li>Partial seconds survive pauses, saves, and IDE restarts. Pending whole seconds are credited at the previous rate before speed, incline, or calorie algorithm changes.</li>
+                    <li>New walking activity is attributed to the day it happened, including resumed older sessions and walks across midnight, keeping daily goals, charts, and streaks accurate.</li>
+                    <li>Imported step totals stay intact when walking resumes; only new distance uses the current height estimate. Reset also clears fractional timing and step progress.</li>
+                    <li>Resume and paused Save validate the complete form. Edited calorie, weight, and interval targets take effect on Save or Resume; changed interval lengths restart the walking block while retaining recorded totals.</li>
+                    <li>Profile measurements, speed, and goals preserve their exact metric values across unit changes. Editable numbers work across locales, and small positive goals use enough decimal places to stay valid.</li>
+                    <li>CSV import supports quoted names containing commas, quotes, and line breaks, and rejects malformed quoting before saving any rows. TCX exports with incomplete speed histories distribute distance across the full workout.</li>
+                    <li>History cleanup uses the most recent recorded activity and protects the session currently on the clock, including while paused.</li>
+                </ul>
+            </li>
             <li>1.1.1:
                 <ul>
                     <li>Walking time is no longer lost when a running session is replaced: New, a mode switch, or loading another session now saves the current walk first.</li>

@@ -1,6 +1,7 @@
 package com.codex.desktreadmill.engine;
 
 import com.codex.desktreadmill.model.SessionData;
+import com.codex.desktreadmill.model.DailyActivity;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
@@ -190,5 +191,37 @@ class SessionStatsTest {
         assertEquals(3.0, records.bestDayDistanceKm, 0.0001);
         assertEquals(day.plusDays(1).toEpochDay(), records.bestDayDistanceEpochDay);
         assertEquals(3000L, records.bestDaySteps);
+    }
+
+    @Test
+    void weeklyTotalsCountOneResumedSessionOnceAcrossSeveralActivityDays() {
+        ZoneId zone = ZoneOffset.UTC;
+        LocalDate monday = LocalDate.of(2026, 9, 7);
+        long cutoff = epochMillisAtStartOfDay(monday, zone);
+        SessionData resumed = session(epochMillisAtStartOfDay(monday.minusMonths(1), zone), 6, 6000, 300);
+        resumed.activityDays.add(new DailyActivity(cutoff - 86_400_000, 60, 1, 1000, 50));
+        resumed.activityDays.add(new DailyActivity(cutoff, 60, 2, 2000, 100));
+        resumed.activityDays.add(new DailyActivity(cutoff + 86_400_000, 60, 3, 3000, 150));
+        SessionStats.Totals week = SessionStats.totalsSince(List.of(resumed), cutoff);
+        assertEquals(5, week.distanceKm);
+        assertEquals(5000, week.steps);
+        assertEquals(250, week.calories);
+        assertEquals(1, week.sessionCount);
+        assertEquals(6, SessionStats.totalsSince(List.of(resumed), 0).distanceKm);
+    }
+
+    @Test
+    void datedActivityUsesCalendarDaysAcrossDaylightSavingChanges() {
+        ZoneId zone = ZoneId.of("Europe/Berlin");
+        LocalDate today = LocalDate.of(2026, 3, 30);
+        long todayMillis = epochMillisAtStartOfDay(today, zone);
+        long yesterdayMillis = epochMillisAtStartOfDay(today.minusDays(1), zone);
+        assertEquals(23 * 3_600_000L, todayMillis - yesterdayMillis);
+        SessionData resumed = session(yesterdayMillis, 3, 3000, 150);
+        resumed.activityDays.add(new DailyActivity(yesterdayMillis, 60, 1, 1000, 50));
+        resumed.activityDays.add(new DailyActivity(todayMillis, 60, 2, 2000, 100));
+        assertEquals(2, SessionStats.totalsSince(List.of(resumed), todayMillis).distanceKm);
+        assertArrayEquals(new double[]{1, 2}, SessionStats.dailyDistanceKm(List.of(resumed), today, zone, 2));
+        assertEquals(2, SessionStats.streakDays(List.of(resumed), today, zone, 0));
     }
 }

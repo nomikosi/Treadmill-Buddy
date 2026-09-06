@@ -9,12 +9,14 @@ import com.codex.desktreadmill.model.SpeedPreset;
 import com.codex.desktreadmill.model.UnitSystem;
 import com.codex.desktreadmill.model.UserProfile;
 import com.intellij.ide.actions.RevealFileAction;
+import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.PersistentStateComponent;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.components.State;
 import com.intellij.openapi.components.Storage;
 import com.intellij.util.xmlb.XmlSerializerUtil;
+import com.intellij.util.concurrency.AppExecutorUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -27,18 +29,24 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service(Service.Level.APP)
 @State(name = "DeskTreadmillStopwatch", storages = @Storage("deskTreadmillStopwatch.xml"))
-public final class TreadmillSettings implements PersistentStateComponent<TreadmillSettings.StateData> {
+public final class TreadmillSettings implements PersistentStateComponent<TreadmillSettings.StateData>, Disposable {
     private StateData state = new StateData();
     private final SessionStore sessionStore;
 
     public TreadmillSettings() {
-        this(Paths.get(System.getProperty("user.home"), ".treadmill-buddy", "sessions.json"));
+        sessionStore = new SessionStore(Paths.get(System.getProperty("user.home"), ".treadmill-buddy", "sessions.json"),
+                AppExecutorUtil.createBoundedScheduledExecutorService("Treadmill Buddy history retry", 1));
         sessionStore.onWriteFailure(this::notifyWriteFailureOnce);
     }
 
     /** Test constructor: keeps session history out of the real user home. */
     public TreadmillSettings(Path sessionsFile) {
         sessionStore = new SessionStore(sessionsFile);
+    }
+
+    @Override
+    public void dispose() {
+        sessionStore.close();
     }
 
     /** Guards the storage-failure balloon; one warning per IDE run is enough. */
@@ -209,6 +217,13 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
 
     public String getLastSessionId() {
         return state.lastSessionId;
+    }
+
+    /** Undo may restore a deleted marker, but must not replace a newer selection. */
+    public void restoreLastSessionId(String id) {
+        if (state.lastSessionId.isBlank() && findSession(id) != null) {
+            state.lastSessionId = id;
+        }
     }
 
     public List<SpeedPreset> getSpeedPresets() {

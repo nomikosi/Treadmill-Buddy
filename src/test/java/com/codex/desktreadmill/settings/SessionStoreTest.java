@@ -313,6 +313,10 @@ class SessionStoreTest {
         b.start();
         a.join();
         b.join();
+        // Contention now returns a pending write instead of waiting or writing
+        // unlocked. Production retries in the background; flush deterministically here.
+        assertTrue(first.flushPendingWrites());
+        assertTrue(second.flushPendingWrites());
 
         assertEquals(2 * perWriter, new SessionStore(file).getSessions().size(),
                 "each write merges the other writer's sessions under the lock");

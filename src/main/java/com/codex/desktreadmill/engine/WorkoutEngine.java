@@ -5,6 +5,7 @@ import com.codex.desktreadmill.TreadmillNotifications;
 import com.codex.desktreadmill.TreadmillToolWindowFactory;
 import com.codex.desktreadmill.calories.CalorieAlgorithm;
 import com.codex.desktreadmill.model.GoalType;
+import com.codex.desktreadmill.model.DailyActivity;
 import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.SessionMode;
 import com.codex.desktreadmill.model.UnitSystem;
@@ -30,6 +31,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.LongSupplier;
@@ -84,9 +86,11 @@ public final class WorkoutEngine implements Disposable {
      * since, and that walk is the newer one.
      */
     private boolean dirty;
+    private boolean knownToStore;
+    /** Present only when the unsaved changes are paused form edits, not new activity. */
+    private SessionData pausedEditBaseline;
     private String statusNote = "";
     private long lastTickMillis;
-    private long carryMillis;
     private long lastActivityMillis;
     private long lastPersistMillis;
     private long lastWalkMillis;
@@ -128,7 +132,7 @@ public final class WorkoutEngine implements Disposable {
             Toolkit.getDefaultToolkit().removeAWTEventListener(activityListener);
         }
         if (session != null && dirty) {
-            settings.saveSession(session);
+            persist();
         }
         listeners.clear();
     }
@@ -176,10 +180,16 @@ public final class WorkoutEngine implements Disposable {
     public void startSession(SessionData newSession) {
         retireCurrentSession();
         session = newSession;
+        knownToStore = false;
+        pausedEditBaseline = null;
         beginRunning();
     }
 
     public void resume() {
+        if (running) {
+            return;
+        }
+        reloadSessions();
         if (session == null || session.completed) {
             return;
         }
@@ -187,21 +197,57 @@ public final class WorkoutEngine implements Disposable {
     }
 
     public void pause() {
+        tick(); // Settle time since the last timer event before stopping.
         pauseInternal(false, "");
+        if (autoPaused) {
+            autoPaused = false;
+            statusNote = "";
+            notifyStateChanged();
+        }
+    }
+
+    /** Resume from an editable form only when the complete configuration is valid. */
+    public boolean resume(WorkoutInputs inputs) {
+        if (!applyInputs(inputs)) {
+            return false;
+        }
+        if (!session.completed) {
+            beginRunning();
+        }
+        return true;
     }
 
     /** Sets the current session without starting the clock. */
     public void loadSession(SessionData loaded) {
+        // History rows are snapshots. Retiring the live session updates the
+        // store, but cannot update the row that was already passed in.
+        boolean sameSession = session != null && session.id.equals(loaded.id);
         retireCurrentSession();
-        session = loaded;
-        dirty = false;
+        if (!sameSession) {
+            SessionData stored = settings.findSession(loaded.id);
+            session = stored == null ? loaded.copy() : stored;
+            knownToStore = stored != null;
+            dirty = false;
+            pausedEditBaseline = null;
+        }
         notifyStateChanged();
     }
 
     public void clearSession() {
         retireCurrentSession();
+        discardSession();
+    }
+
+    /** Discard is deliberately separate from New, which saves the previous walk. */
+    private void discardSession() {
+        timer.stop();
+        running = false;
+        autoPaused = false;
+        statusNote = "";
         session = null;
         dirty = false;
+        knownToStore = false;
+        pausedEditBaseline = null;
         notifyStateChanged();
     }
 
@@ -213,7 +259,7 @@ public final class WorkoutEngine implements Disposable {
      */
     private void retireCurrentSession() {
         if (running) {
-            pauseInternal(false, "");
+            pause();
         } else if (dirty) {
             persist();
         }
@@ -227,18 +273,91 @@ public final class WorkoutEngine implements Disposable {
      * Takes over a stored copy of the current session that another IDE
      * extended, so Resume continues from the newer walk instead of overwriting
      * it with this clock's stale state. Only applies to a paused session whose
-     * stored twin has actually moved on; a running session is authoritative.
+     * stored twin has actually moved on. Paused form edits are merged field by
+     * field; unsaved activity and a running session remain authoritative.
      */
     public void adoptStoredProgress(@Nullable SessionData stored) {
-        if (session == null || running || stored == null || !stored.id.equals(session.id)) {
+        if (session == null || running) {
             return;
         }
-        if (stored.elapsedSeconds == session.elapsedSeconds && stored.completed == session.completed) {
+        if (stored == null) {
+            if (knownToStore) {
+                discardSession();
+            }
             return;
         }
+        if (!stored.id.equals(session.id) || dirty && pausedEditBaseline == null) {
+            return;
+        }
+        SessionData edited = session;
+        SessionData baseline = pausedEditBaseline;
         session = stored.copy();
+        knownToStore = true;
         dirty = false;
+        pausedEditBaseline = null;
+        if (baseline != null) {
+            WorkoutInputs latest = WorkoutInputs.fromSession(session);
+            // Completion or a mode change elsewhere supersedes a stale workout form.
+            if (!session.completed && latest.mode() == SessionMode.fromId(baseline.modeId)) {
+                WorkoutInputs merged = WorkoutInputs.fromSession(edited)
+                        .mergeChanges(WorkoutInputs.fromSession(baseline), latest);
+                if (!merged.equals(latest)) {
+                    merged.applyConfiguration(session, settings.getProfile());
+                    dirty = true;
+                }
+            }
+            if (!edited.name.equals(baseline.name) && !edited.name.equals(session.name)) {
+                session.name = edited.name;
+                dirty = true;
+            }
+            if (dirty) {
+                pausedEditBaseline = stored.copy();
+            }
+        }
         notifyStateChanged();
+    }
+
+    /** Reconcile paused state both on focus and before Resume/Save. */
+    public void reloadSessions() {
+        boolean changed = settings.reloadSessions();
+        if (session != null) {
+            adoptStoredProgress(settings.findSession(session.id));
+        }
+        if (changed) {
+            notifySessionsChanged();
+        }
+    }
+
+    public record Deletion(List<SessionData> sessions, String lastSessionId, boolean persisted) {
+    }
+
+    /** Captures Undo data and discards the clock before deleting from storage. */
+    public Deletion deleteSessions(List<String> ids) {
+        if (session != null && ids.contains(session.id)) {
+            tick();
+        }
+        List<SessionData> deleted = new ArrayList<>();
+        for (String id : ids) {
+            SessionData stored = session != null && session.id.equals(id)
+                    ? session.copy() : settings.findSession(id);
+            if (stored != null) {
+                deleted.add(stored);
+            }
+        }
+        String lastId = settings.getLastSessionId();
+        if (session != null && ids.contains(session.id)) {
+            discardSession();
+        }
+        boolean persisted = settings.deleteSessions(ids);
+        notifySessionsChanged();
+        return new Deletion(List.copyOf(deleted), lastId, persisted);
+    }
+
+    public boolean undoDeletion(Deletion deletion) {
+        boolean persisted = settings.saveSessions(deletion.sessions());
+        settings.restoreLastSessionId(deletion.lastSessionId());
+        notifySessionsChanged();
+        return persisted;
     }
 
     /**
@@ -250,7 +369,9 @@ public final class WorkoutEngine implements Disposable {
         settings.restoreSession(previous);
         if (session != null && session.id.equals(previous.id) && !running) {
             session = previous.copy();
+            knownToStore = true;
             dirty = false;
+            pausedEditBaseline = null;
             notifyStateChanged();
         }
         notifySessionsChanged();
@@ -259,7 +380,7 @@ public final class WorkoutEngine implements Disposable {
     /** Clears the current session if it matches the given id (e.g. after deletion). */
     public void clearSessionIf(String id) {
         if (session != null && session.id.equals(id)) {
-            clearSession();
+            discardSession();
         }
     }
 
@@ -271,15 +392,8 @@ public final class WorkoutEngine implements Disposable {
         running = false;
         autoPaused = false;
         statusNote = "";
-        session.elapsedSeconds = 0L;
-        session.remainingSeconds = session.targetSeconds;
-        session.distanceKm = 0.0;
-        session.steps = 0L;
-        session.calories = 0.0;
-        session.completed = false;
-        session.segments.clear();
-        session.intervalWalking = true;
-        session.intervalPhaseSeconds = 0L;
+        pausedEditBaseline = null;
+        session.resetProgress();
         // Reset restarts the walk under the same id, so let it earn the
         // longest-session record again instead of staying suppressed forever.
         if (session.id.equals(settings.getLastSessionRecordId())) {
@@ -299,6 +413,11 @@ public final class WorkoutEngine implements Disposable {
         if (Math.abs(session.speedKmh - speedKmh) < 0.001) {
             return;
         }
+        tick();
+        if (session == null || session.completed) {
+            return;
+        }
+        rememberPausedEdit();
         session.speedKmh = speedKmh;
         dirty = true;
         WorkoutMath.recalcRemaining(session, settings.getProfile());
@@ -312,6 +431,11 @@ public final class WorkoutEngine implements Disposable {
         if (Math.abs(session.inclinePercent - inclinePercent) < 0.001) {
             return;
         }
+        tick();
+        if (session == null || session.completed) {
+            return;
+        }
+        rememberPausedEdit();
         session.inclinePercent = inclinePercent;
         dirty = true;
         WorkoutMath.recalcRemaining(session, settings.getProfile());
@@ -325,23 +449,75 @@ public final class WorkoutEngine implements Disposable {
         if (session.algorithmId.equals(algorithm.name())) {
             return;
         }
+        tick();
+        if (session == null || session.completed) {
+            return;
+        }
+        rememberPausedEdit();
         session.algorithmId = algorithm.name();
         dirty = true;
         WorkoutMath.recalcRemaining(session, settings.getProfile());
         notifyStateChanged();
     }
 
+    /** Applies a validated paused form atomically, without discarding walked progress. */
+    public boolean applyInputs(WorkoutInputs inputs) {
+        if (running || session == null || session.completed
+                || SessionMode.fromId(session.modeId) != inputs.mode()
+                || inputs.invalidField(settings.getProfile()) != null) {
+            return false;
+        }
+        // Capture the form's baseline before reload notifies UI listeners and refreshes fields.
+        WorkoutInputs baseline = WorkoutInputs.fromSession(session);
+        SessionData edited = session.copy();
+        inputs.applyTo(edited, settings.getProfile());
+        reloadSessions();
+        if (session == null || session.completed || SessionMode.fromId(session.modeId) != inputs.mode()) {
+            return false;
+        }
+        WorkoutInputs latest = WorkoutInputs.fromSession(session);
+        WorkoutInputs merged = WorkoutInputs.fromSession(edited).mergeChanges(baseline, latest);
+        if (merged.invalidField(settings.getProfile()) != null) {
+            return false;
+        }
+        if (!merged.equals(latest) || !session.modeId.equals(merged.mode().name())
+                || !session.algorithmId.equals(merged.algorithm().name())) {
+            rememberPausedEdit();
+            dirty = true;
+        }
+        merged.applyTo(session, settings.getProfile());
+        if (inputs.mode().isCountdown() && session.remainingSeconds == 0) {
+            completeSession();
+        } else {
+            notifyStateChanged();
+        }
+        return true;
+    }
+
     public void setSessionName(String name) {
         if (session == null || name.isBlank() || name.trim().equals(session.name)) {
             return;
         }
+        rememberPausedEdit();
         session.name = name.trim();
         dirty = true;
         notifyStateChanged();
     }
 
+    private void rememberPausedEdit() {
+        if (!running && !dirty && pausedEditBaseline == null) {
+            pausedEditBaseline = session.copy();
+        }
+    }
+
     /** Returns whether the session reached disk; on false it stays in memory and is retried later. */
     public boolean persistNow() {
+        tick();
+        boolean hadSession = session != null;
+        reloadSessions();
+        if (hadSession && session == null) {
+            return false; // A confirmed external deletion is not a successful save.
+        }
         boolean persisted = persist();
         notifyStateChanged();
         return persisted;
@@ -366,10 +542,11 @@ public final class WorkoutEngine implements Disposable {
         autoPaused = false;
         statusNote = "";
         lastTickMillis = now;
-        carryMillis = 0L;
         lastActivityMillis = now;
         lastWalkMillis = now;
-        timer.start();
+        if (interactive) {
+            timer.start();
+        }
         persist();
         notifyStateChanged();
     }
@@ -382,7 +559,6 @@ public final class WorkoutEngine implements Disposable {
         running = false;
         autoPaused = auto;
         statusNote = note;
-        carryMillis = 0L;
         lastWalkMillis = clock.getAsLong();
         persist();
         maybeCelebrateRecords();
@@ -411,7 +587,7 @@ public final class WorkoutEngine implements Disposable {
         long idleDeadline = idleDeadline();
         boolean idle = now >= idleDeadline;
         long creditUntil = idle ? Math.max(previousTick, idleDeadline) : now;
-        long secondsAdvanced = advance(creditUntil - previousTick, now);
+        long secondsAdvanced = advance(creditUntil - previousTick, creditUntil, now);
         if (!running) {
             return; // A countdown completed inside the advance; completeSession did the rest.
         }
@@ -429,10 +605,14 @@ public final class WorkoutEngine implements Disposable {
     }
 
     /** Credits {@code millis} of walking to the session; returns the whole seconds it advanced. */
-    private long advance(long millis, long now) {
-        carryMillis += millis;
-        long secondsToAdvance = carryMillis / 1000L;
-        carryMillis %= 1000L;
+    private long advance(long millis, long creditUntil, long now) {
+        if (millis > 0) {
+            pausedEditBaseline = null;
+            dirty = true;
+        }
+        long accruedMillis = session.timerRemainderMillis + millis;
+        long secondsToAdvance = accruedMillis / 1000L;
+        session.timerRemainderMillis = accruedMillis % 1000L;
         if (secondsToAdvance == 0) {
             return 0L;
         }
@@ -441,14 +621,30 @@ public final class WorkoutEngine implements Disposable {
         SessionMode mode = SessionMode.fromId(session.modeId);
         boolean phaseSwitched = false;
         for (long i = 0; i < secondsToAdvance && running; i++) {
+            boolean walking = mode != SessionMode.INTERVAL || session.intervalWalking;
+            if (walking && session.activityDays.isEmpty() && session.elapsedSeconds > 0) {
+                // Older files have no dated breakdown. Preserve their known
+                // totals on the original date before recording new activity.
+                session.activityDays.add(new DailyActivity(session.createdMillis, session.elapsedSeconds,
+                        session.distanceKm, session.steps, session.calories));
+            }
+            double previousKm = session.distanceKm;
+            double previousCalories = session.calories;
+            long previousSteps = session.steps;
             if (mode == SessionMode.INTERVAL) {
                 phaseSwitched |= WorkoutMath.advanceIntervalSecond(session, settings.getProfile());
             } else {
                 WorkoutMath.advanceOneSecond(session, settings.getProfile());
-                if (mode.isCountdown() && session.remainingSeconds == 0L) {
-                    completeSession();
-                    return secondsToAdvance;
-                }
+            }
+            if (walking) {
+                long secondEnd = creditUntil - session.timerRemainderMillis - (secondsToAdvance - i - 1) * 1000L;
+                recordActivity(secondEnd - 1, session.distanceKm - previousKm,
+                        session.steps - previousSteps, session.calories - previousCalories);
+            }
+            if (mode.isCountdown() && session.remainingSeconds == 0L) {
+                session.timerRemainderMillis = 0L;
+                completeSession();
+                return secondsToAdvance;
             }
         }
         if (phaseSwitched) {
@@ -461,6 +657,22 @@ public final class WorkoutEngine implements Disposable {
             announceIntervalPhase();
         }
         return secondsToAdvance;
+    }
+
+    private void recordActivity(long atMillis, double km, long steps, double calories) {
+        ZoneId zone = ZoneId.systemDefault();
+        long dateMillis = Instant.ofEpochMilli(atMillis).atZone(zone).toLocalDate()
+                .atStartOfDay(zone).toInstant().toEpochMilli();
+        DailyActivity day = session.activityDays.stream().filter(value -> value.dateMillis == dateMillis)
+                .findFirst().orElse(null);
+        if (day == null) {
+            day = new DailyActivity(dateMillis, 0L, 0.0, 0L, 0.0);
+            session.activityDays.add(day);
+        }
+        day.elapsedSeconds++;
+        day.distanceKm += km;
+        day.steps += steps;
+        day.calories += calories;
     }
 
     private void announceIntervalPhase() {
@@ -485,6 +697,7 @@ public final class WorkoutEngine implements Disposable {
         autoPaused = false;
         statusNote = "";
         session.completed = true;
+        pausedEditBaseline = null;
         lastWalkMillis = clock.getAsLong();
         persist();
         maybeCelebrateRecords();
@@ -604,10 +817,19 @@ public final class WorkoutEngine implements Disposable {
     }
 
     private boolean persist() {
+        if (!running && pausedEditBaseline != null) {
+            reloadSessions();
+            if (session == null) {
+                return false;
+            }
+        }
         if (session == null) {
             return true;
         }
         boolean persisted = settings.saveSession(session);
+        // Once queued in the store, a failed write must retain the complete pending snapshot.
+        pausedEditBaseline = null;
+        knownToStore = true;
         // A failed write leaves the session dirty, so shutdown and the next
         // transition try again instead of believing it is safe on disk.
         dirty = !persisted;

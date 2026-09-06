@@ -6,6 +6,8 @@ import com.codex.desktreadmill.model.GoalType;
 import com.codex.desktreadmill.model.UnitSystem;
 import com.codex.desktreadmill.model.UserProfile;
 import com.codex.desktreadmill.ui.ComboHelp;
+import com.codex.desktreadmill.ui.NumericInput;
+import com.codex.desktreadmill.ui.MetricInput;
 import com.intellij.openapi.ui.ComboBox;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBTextField;
@@ -17,7 +19,6 @@ import javax.swing.JList;
 import javax.swing.JPanel;
 import java.awt.BorderLayout;
 import java.awt.Component;
-import java.util.function.DoubleUnaryOperator;
 
 /**
  * The profile and defaults form shared by the Settings page and the first-run
@@ -25,13 +26,6 @@ import java.util.function.DoubleUnaryOperator;
  * {@link #applyTo}, so neither can silently drop a field the other saves.
  */
 public final class ProfilePanel {
-    /**
-     * Fields show one decimal, so a displayed value is within this much of
-     * the exact conversion of the stored metric value. A field that still
-     * shows what it was populated with counts as untouched.
-     */
-    static final double DISPLAY_TOLERANCE = 0.05 + 1e-9;
-
     private final ComboBox<UnitSystem> unitsCombo = new ComboBox<>(UnitSystem.values());
     private final JBTextField weightField = new JBTextField();
     private final JBTextField heightField = new JBTextField();
@@ -52,19 +46,12 @@ public final class ProfilePanel {
 
     /** Units currently reflected by the field texts, so a combo switch can convert them. */
     private UnitSystem fieldUnits = UnitSystem.METRIC;
-    /**
-     * The stored metric values the fields were populated from. An untouched
-     * field hands these back exactly instead of re-converting its rounded
-     * text - "154.3 lb" converted back is 69.99 kg, which used to flag the
-     * page as modified the moment it opened in imperial mode and nudge the
-     * stored weight on every OK.
-     */
-    private double baselineWeightKg;
-    private double baselineHeightCm;
-    private GoalType baselineDailyGoalType = GoalType.NONE;
-    private double baselineDailyGoalValue;
-    private GoalType baselineWeeklyGoalType = GoalType.NONE;
-    private double baselineWeeklyGoalValue;
+    private final MetricInput weightInput = new MetricInput(MetricInput.Quantity.WEIGHT, 1);
+    private final MetricInput heightInput = new MetricInput(MetricInput.Quantity.HEIGHT, 1);
+    private final MetricInput dailyDistanceInput = new MetricInput(MetricInput.Quantity.DISTANCE, 1);
+    private final MetricInput weeklyDistanceInput = new MetricInput(MetricInput.Quantity.DISTANCE, 1);
+    private GoalType fieldDailyGoalType = GoalType.NONE;
+    private GoalType fieldWeeklyGoalType = GoalType.NONE;
 
     public ProfilePanel() {
         ComboHelp.configureAlgorithmCombo(algorithmCombo, this::getAlgorithm);
@@ -116,35 +103,28 @@ public final class ProfilePanel {
     /** Populates every field from the settings and remembers them as the untouched baseline. */
     public void setValues(TreadmillSettings settings) {
         UserProfile profile = settings.getProfile();
-        baselineWeightKg = profile.weightKg;
-        baselineHeightCm = profile.heightCm;
-        baselineDailyGoalType = settings.getDailyGoalType();
-        baselineDailyGoalValue = settings.getDailyGoalValue();
-        baselineWeeklyGoalType = settings.getWeeklyGoalType();
-        baselineWeeklyGoalValue = settings.getWeeklyGoalValue();
-
         fieldUnits = settings.getUnitSystem();
         unitsCombo.setSelectedItem(fieldUnits);
-        weightField.setText(format(fieldUnits.weightFromKg(profile.weightKg)));
-        heightField.setText(format(fieldUnits.heightFromCm(profile.heightCm)));
+        weightField.setText(weightInput.display(profile.weightKg, fieldUnits));
+        heightField.setText(heightInput.display(profile.heightCm, fieldUnits));
         algorithmCombo.setSelectedItem(settings.getSelectedAlgorithm());
         autoPauseField.setText(String.valueOf(settings.getAutoPauseMinutes()));
         moveReminderField.setText(String.valueOf(settings.getMoveReminderMinutes()));
-        goalTypeCombo.setSelectedItem(baselineDailyGoalType);
-        goalValueField.setText(goalText(baselineDailyGoalType, baselineDailyGoalValue));
-        weeklyGoalTypeCombo.setSelectedItem(baselineWeeklyGoalType);
-        weeklyGoalValueField.setText(goalText(baselineWeeklyGoalType, baselineWeeklyGoalValue));
+        goalTypeCombo.setSelectedItem(settings.getDailyGoalType());
+        goalValueField.setText(goalText(settings.getDailyGoalType(), settings.getDailyGoalValue(), dailyDistanceInput));
+        weeklyGoalTypeCombo.setSelectedItem(settings.getWeeklyGoalType());
+        weeklyGoalValueField.setText(goalText(settings.getWeeklyGoalType(), settings.getWeeklyGoalValue(), weeklyDistanceInput));
         streakRestDaysField.setText(String.valueOf(settings.getStreakRestDaysPerWeek()));
         streakRiskHourField.setText(String.valueOf(settings.getStreakRiskHour()));
         updateUnitLabels();
         goalTypeChanged();
     }
 
-    private String goalText(GoalType type, double metricValue) {
+    private String goalText(GoalType type, double metricValue, MetricInput distanceInput) {
         if (metricValue <= 0) {
             return "";
         }
-        return format(type == GoalType.DISTANCE ? fieldUnits.distanceFromKm(metricValue) : metricValue);
+        return type == GoalType.DISTANCE ? distanceInput.display(metricValue, fieldUnits) : format(metricValue);
     }
 
     /**
@@ -169,24 +149,10 @@ public final class ProfilePanel {
     public UserProfile getProfile() {
         UnitSystem units = getUnitSystem();
         UserProfile profile = new UserProfile();
-        profile.weightKg = resolveMetric(weightField.getText(), baselineWeightKg, units::weightFromKg, units::weightToKg);
-        profile.heightCm = resolveMetric(heightField.getText(), baselineHeightCm, units::heightFromCm, units::heightToCm);
+        profile.weightKg = weightInput.read(weightField.getText(), units);
+        profile.heightCm = heightInput.read(heightField.getText(), units);
         profile.completed = true;
         return profile;
-    }
-
-    /**
-     * The metric value a field stands for: the baseline when the text still
-     * shows the baseline's (rounded) display value, the converted text
-     * otherwise. Package-visible for tests.
-     */
-    static double resolveMetric(
-            String text, double baselineMetric, DoubleUnaryOperator fromMetric, DoubleUnaryOperator toMetric) {
-        double display = parseDouble(text);
-        if (baselineMetric > 0 && Math.abs(display - fromMetric.applyAsDouble(baselineMetric)) <= DISPLAY_TOLERANCE) {
-            return baselineMetric;
-        }
-        return toMetric.applyAsDouble(display);
     }
 
     public CalorieAlgorithm getAlgorithm() {
@@ -207,7 +173,7 @@ public final class ProfilePanel {
     /** Goal value converted to metric terms (steps, km, or kcal). */
     public double getDailyGoalValueMetric() {
         return goalValueMetric(getDailyGoalType(), goalValueField.getText(),
-                baselineDailyGoalType, baselineDailyGoalValue);
+                dailyDistanceInput);
     }
 
     public GoalType getWeeklyGoalType() {
@@ -218,10 +184,10 @@ public final class ProfilePanel {
     /** Weekly goal value converted to metric terms (steps, km, or kcal). */
     public double getWeeklyGoalValueMetric() {
         return goalValueMetric(getWeeklyGoalType(), weeklyGoalValueField.getText(),
-                baselineWeeklyGoalType, baselineWeeklyGoalValue);
+                weeklyDistanceInput);
     }
 
-    private double goalValueMetric(GoalType type, String text, GoalType baselineType, double baselineValue) {
+    private double goalValueMetric(GoalType type, String text, MetricInput distanceInput) {
         if (type == GoalType.NONE) {
             return 0.0;
         }
@@ -232,11 +198,7 @@ public final class ProfilePanel {
         if (type != GoalType.DISTANCE) {
             return value;
         }
-        UnitSystem units = getUnitSystem();
-        // Only a distance goal is unit-converted, so only it can suffer the
-        // rounding round trip; steps and kcal are stored as typed.
-        double baseline = baselineType == GoalType.DISTANCE ? baselineValue : 0.0;
-        return resolveMetric(text, baseline, units::distanceFromKm, units::distanceToKm);
+        return distanceInput.read(text, getUnitSystem());
     }
 
     public int getStreakRestDaysPerWeek() {
@@ -257,8 +219,8 @@ public final class ProfilePanel {
 
     public String validateInput() {
         UnitSystem units = getUnitSystem();
-        double weightKg = units.weightToKg(parseDouble(weightField.getText()));
-        double heightCm = units.heightToCm(parseDouble(heightField.getText()));
+        double weightKg = getProfile().weightKg;
+        double heightCm = getProfile().heightCm;
         if (weightKg < 20 || weightKg > 300) {
             return TreadmillBundle.message("settings.validation.weight",
                     String.format("%.0f", units.weightFromKg(20)),
@@ -316,22 +278,22 @@ public final class ProfilePanel {
         if (units == fieldUnits) {
             return;
         }
-        convertField(weightField, fieldUnits::weightToKg, units::weightFromKg);
-        convertField(heightField, fieldUnits::heightToCm, units::heightFromCm);
+        convertField(weightField, weightInput, fieldUnits, units);
+        convertField(heightField, heightInput, fieldUnits, units);
         if (getDailyGoalType() == GoalType.DISTANCE) {
-            convertField(goalValueField, fieldUnits::distanceToKm, units::distanceFromKm);
+            convertField(goalValueField, dailyDistanceInput, fieldUnits, units);
         }
         if (getWeeklyGoalType() == GoalType.DISTANCE) {
-            convertField(weeklyGoalValueField, fieldUnits::distanceToKm, units::distanceFromKm);
+            convertField(weeklyGoalValueField, weeklyDistanceInput, fieldUnits, units);
         }
         fieldUnits = units;
         updateUnitLabels();
     }
 
-    private static void convertField(JBTextField field, DoubleUnaryOperator toMetric, DoubleUnaryOperator fromMetric) {
-        double value = parseDouble(field.getText());
+    private static void convertField(JBTextField field, MetricInput input, UnitSystem previous, UnitSystem next) {
+        double value = input.read(field.getText(), previous);
         if (value > 0) {
-            field.setText(format(fromMetric.applyAsDouble(toMetric.applyAsDouble(value))));
+            field.setText(input.display(value, next));
         }
     }
 
@@ -343,6 +305,14 @@ public final class ProfilePanel {
     }
 
     private void goalTypeChanged() {
+        if (getDailyGoalType() != fieldDailyGoalType) {
+            dailyDistanceInput.clear();
+            fieldDailyGoalType = getDailyGoalType();
+        }
+        if (getWeeklyGoalType() != fieldWeeklyGoalType) {
+            weeklyDistanceInput.clear();
+            fieldWeeklyGoalType = getWeeklyGoalType();
+        }
         goalValueField.setEnabled(getDailyGoalType() != GoalType.NONE);
         weeklyGoalValueField.setEnabled(getWeeklyGoalType() != GoalType.NONE);
         updateGoalValueLabel();
@@ -364,12 +334,7 @@ public final class ProfilePanel {
 
     /** The field's number, or -1 when it is not a usable one: "NaN" parses but passes every range check. */
     private static double parseDouble(String text) {
-        try {
-            double value = Double.parseDouble(text.trim().replace(',', '.'));
-            return Double.isFinite(value) ? value : -1.0;
-        } catch (NumberFormatException ignored) {
-            return -1.0;
-        }
+        return NumericInput.parse(text);
     }
 
     private static int parseInt(String text) {
@@ -380,10 +345,7 @@ public final class ProfilePanel {
         }
     }
 
-    private static String format(double value) {
-        if (Math.rint(value) == value) {
-            return String.valueOf((long) value);
-        }
-        return String.format("%.1f", value);
+    static String format(double value) {
+        return NumericInput.format(value, 1);
     }
 }

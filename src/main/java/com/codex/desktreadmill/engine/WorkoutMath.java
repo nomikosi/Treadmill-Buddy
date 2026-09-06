@@ -31,8 +31,14 @@ public final class WorkoutMath {
     public static void advanceOneSecond(SessionData session, UserProfile profile) {
         CalorieAlgorithm algorithm = CalorieAlgorithm.fromId(session.algorithmId);
         session.elapsedSeconds++;
-        session.distanceKm += session.speedKmh / 3600.0;
-        session.steps = stepsForDistance(session.distanceKm, profile.heightCm);
+        double distanceKm = session.speedKmh / 3600.0;
+        session.distanceKm += distanceKm;
+        // Historical/imported totals belong to the activity already recorded.
+        // Only new distance uses the current profile; carry rounding across ticks.
+        double estimatedSteps = session.stepRemainder + distanceKm * 1000.0 / stepLengthMeters(profile.heightCm);
+        long addedSteps = Math.round(estimatedSteps);
+        session.steps += addedSteps;
+        session.stepRemainder = estimatedSteps - addedSteps;
         session.calories += algorithm.kcalPerMinute(profile, session.speedKmh, session.inclinePercent) / 60.0;
         recordSegmentSecond(session);
         recalcRemaining(session, profile);

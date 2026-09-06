@@ -15,9 +15,13 @@ public class SessionData {
     public double targetFatKg = 0.0;
     public long targetSeconds = 0L;
     public long elapsedSeconds = 0L;
+    /** Fraction of a timer second, retained across pause, load, and IDE restarts. */
+    public long timerRemainderMillis = 0L;
     public long remainingSeconds = 0L;
     public double distanceKm = 0.0;
     public long steps = 0L;
+    /** Rounding carry for newly estimated steps, in [-0.5, 0.5). */
+    public double stepRemainder = 0.0;
     public double calories = 0.0;
     public boolean completed = false;
     public long createdMillis = 0L;
@@ -31,6 +35,8 @@ public class SessionData {
     public long intervalPhaseSeconds = 0L;
     /** Per-speed breakdown of walked time, appended as the session ticks. */
     public List<SpeedSegment> segments = new ArrayList<>();
+    /** Empty for legacy history, whose activity is attributed to createdMillis. */
+    public List<DailyActivity> activityDays = new ArrayList<>();
 
     /**
      * Repairs values that hand-edited or foreign JSON can carry. Gson keeps
@@ -60,6 +66,19 @@ public class SessionData {
             }
         }
         speedKmh = finiteOr(speedKmh, 3.0);
+        timerRemainderMillis = Math.max(0L, Math.min(999L, timerRemainderMillis));
+        if (!Double.isFinite(stepRemainder) || stepRemainder < -0.5 || stepRemainder >= 0.5) {
+            stepRemainder = 0.0;
+        }
+        if (activityDays == null) {
+            activityDays = new ArrayList<>();
+        } else {
+            activityDays.removeIf(Objects::isNull);
+            for (DailyActivity day : activityDays) {
+                day.distanceKm = finiteOr(day.distanceKm, 0.0);
+                day.calories = finiteOr(day.calories, 0.0);
+            }
+        }
         inclinePercent = finiteOr(inclinePercent, 0.0);
         targetCalories = finiteOr(targetCalories, 0.0);
         targetFatKg = finiteOr(targetFatKg, 0.0);
@@ -70,6 +89,32 @@ public class SessionData {
 
     private static double finiteOr(double value, double fallback) {
         return Double.isFinite(value) ? value : fallback;
+    }
+
+    /** Clears all accumulated progress while retaining identity and workout configuration. */
+    public void resetProgress() {
+        elapsedSeconds = 0;
+        timerRemainderMillis = 0;
+        remainingSeconds = targetSeconds;
+        distanceKm = 0;
+        steps = 0;
+        stepRemainder = 0;
+        calories = 0;
+        completed = false;
+        segments.clear();
+        activityDays.clear();
+        intervalWalking = true;
+        intervalPhaseSeconds = 0;
+    }
+
+    public long latestActivityMillis() {
+        long latest = createdMillis;
+        for (DailyActivity day : activityDays) {
+            if (day.elapsedSeconds > 0) {
+                latest = Math.max(latest, day.dateMillis);
+            }
+        }
+        return latest;
     }
 
     public SessionData copy() {
@@ -84,9 +129,11 @@ public class SessionData {
         copy.targetFatKg = targetFatKg;
         copy.targetSeconds = targetSeconds;
         copy.elapsedSeconds = elapsedSeconds;
+        copy.timerRemainderMillis = timerRemainderMillis;
         copy.remainingSeconds = remainingSeconds;
         copy.distanceKm = distanceKm;
         copy.steps = steps;
+        copy.stepRemainder = stepRemainder;
         copy.calories = calories;
         copy.completed = completed;
         copy.createdMillis = createdMillis;
@@ -97,6 +144,10 @@ public class SessionData {
         copy.segments = new ArrayList<>();
         for (SpeedSegment segment : segments) {
             copy.segments.add(segment.copy());
+        }
+        copy.activityDays = new ArrayList<>();
+        for (DailyActivity day : activityDays) {
+            copy.activityDays.add(day.copy());
         }
         return copy;
     }

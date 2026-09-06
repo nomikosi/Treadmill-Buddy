@@ -1,7 +1,9 @@
 package com.codex.desktreadmill.ui;
 
 import com.codex.desktreadmill.calories.CalorieAlgorithm;
+import com.codex.desktreadmill.engine.WorkoutMath;
 import com.codex.desktreadmill.model.SessionData;
+import com.codex.desktreadmill.model.DailyActivity;
 import com.codex.desktreadmill.model.SessionMode;
 import com.codex.desktreadmill.model.SpeedSegment;
 import com.codex.desktreadmill.model.UserProfile;
@@ -19,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class SessionTransferTest {
 
@@ -41,12 +44,10 @@ class SessionTransferTest {
     }
 
     private static SessionData roundTrip(SessionData original) {
-        String csv = SessionTransfer.buildCsv(List.of(original));
-        String[] lines = csv.split("\n");
-        assertEquals(2, lines.length);
-        List<String> header = SessionTransfer.parseCsvLine(lines[0]);
-        List<String> fields = SessionTransfer.parseCsvLine(lines[1]);
-        return SessionTransfer.parseCsvSession(header, fields);
+        String csv = SessionCsvCodec.buildCsv(List.of(original));
+        List<SessionData> parsed = SessionCsvCodec.parseCsv(csv);
+        assertEquals(1, parsed.size());
+        return parsed.getFirst();
     }
 
     @Test
@@ -66,6 +67,31 @@ class SessionTransferTest {
         assertEquals(original.completed, parsed.completed);
         // The created column stores minute precision.
         assertEquals(original.createdMillis / 60_000L, parsed.createdMillis / 60_000L);
+    }
+
+    @Test
+    void csvRoundTripPreservesActivityDatesMetricsAndPartialSeconds() {
+        SessionData original = sampleSession();
+        original.timerRemainderMillis = 750;
+        original.stepRemainder = -0.123456789;
+        original.activityDays.add(new DailyActivity(1_700_000_000_000L, 1000, 1.23456789, 1500, 90.123456));
+        original.activityDays.add(new DailyActivity(1_700_086_400_000L, 800, 1.01543211, 1700, 60.276544));
+        original.activityDays.getFirst().distanceKm += 0.000123456;
+        original.distanceKm = original.activityDays.stream().mapToDouble(day -> day.distanceKm).sum();
+        SessionData parsed = roundTrip(original);
+        assertEquals(original.distanceKm, parsed.distanceKm);
+        assertEquals(750, parsed.timerRemainderMillis);
+        assertEquals(original.stepRemainder, parsed.stepRemainder);
+        assertEquals(2, parsed.activityDays.size());
+        for (int i = 0; i < 2; i++) {
+            DailyActivity before = original.activityDays.get(i);
+            DailyActivity after = parsed.activityDays.get(i);
+            assertEquals(before.dateMillis, after.dateMillis);
+            assertEquals(before.elapsedSeconds, after.elapsedSeconds);
+            assertEquals(before.distanceKm, after.distanceKm);
+            assertEquals(before.steps, after.steps);
+            assertEquals(before.calories, after.calories);
+        }
     }
 
     @Test
@@ -148,7 +174,7 @@ class SessionTransferTest {
             assertEquals(4.5, parsed.speedKmh, 0.05);
             assertEquals(2.25, parsed.distanceKm, 0.001);
             assertEquals(3_200L, parsed.steps);
-            assertFalse(SessionTransfer.buildCsv(List.of(sampleSession())).contains("4,5"),
+            assertFalse(SessionCsvCodec.buildCsv(List.of(sampleSession())).contains("4,5"),
                     "numbers must be dot-decimal regardless of locale");
         } finally {
             Locale.setDefault(original);
@@ -164,7 +190,7 @@ class SessionTransferTest {
             session.elapsedSeconds = 120L;
             session.distanceKm = 0.12;
             session.segments = new ArrayList<>();
-            String track = SessionTransfer.buildTrackpoints(session, Instant.ofEpochMilli(session.createdMillis));
+            String track = SessionTcxCodec.buildTrackpoints(session, Instant.ofEpochMilli(session.createdMillis));
             assertTrue(track.contains("<DistanceMeters>60.0</DistanceMeters>"),
                     "TCX must use XML dot-decimal numbers, got: " + track);
         } finally {
@@ -194,8 +220,8 @@ class SessionTransferTest {
                 + "Old walk,Calorie burn,ACSM treadmill (default),2026-08-10 12:00,4.5,0.0,1800,2.250,3200,"
                 + "150.0,300.0,0.00,false\n";
         String[] lines = legacy.split("\n");
-        SessionData parsed = SessionTransfer.parseCsvSession(
-                SessionTransfer.parseCsvLine(lines[0]), SessionTransfer.parseCsvLine(lines[1]));
+        SessionData parsed = SessionCsvCodec.parseCsvSession(
+                SessionCsvCodec.parseCsvLine(lines[0]), SessionCsvCodec.parseCsvLine(lines[1]));
 
         assertNotNull(parsed);
         assertEquals("Old walk", parsed.name);
@@ -217,12 +243,101 @@ class SessionTransferTest {
     @Test
     void aByteOrderMarkDoesNotEatTheFirstColumn() {
         String withBom = "﻿name,mode,elapsed_seconds\nMorning,Marathon,600\n";
-        String[] lines = withBom.split("\n");
-        // importCsv strips the BOM before parsing the header; emulate that here.
-        List<String> header = SessionTransfer.parseCsvLine(lines[0].replace("﻿", ""));
-        SessionData parsed = SessionTransfer.parseCsvSession(header, SessionTransfer.parseCsvLine(lines[1]));
+        SessionData parsed = SessionCsvCodec.parseCsv(withBom).getFirst();
         assertNotNull(parsed);
         assertEquals("Morning", parsed.name, "the BOM must not hide the name column");
+    }
+
+    @Test
+    void multilineNamesRoundTripWithQuotesCommasAndWhitespace() {
+        for (String newline : List.of("\n", "\r\n", "\r")) {
+            SessionData first = sampleSession();
+            first.name = "  Morning," + newline + "with \"quotes\"  ";
+            SessionData second = sampleSession();
+            second.id = "second";
+            second.name = "Next walk";
+            List<SessionData> imported = SessionCsvCodec.parseCsv(SessionCsvCodec.buildCsv(List.of(first, second)));
+            assertEquals(2, imported.size());
+            assertEquals(first.name, imported.getFirst().name);
+            assertEquals(first.elapsedSeconds, imported.getFirst().elapsedSeconds);
+            assertEquals(first.distanceKm, imported.getFirst().distanceKm);
+            assertEquals(second.id, imported.getLast().id);
+        }
+    }
+
+    @Test
+    void csvHandlesWindowsRecordEndingsBlankLinesAndMissingFinalNewline() {
+        String csv = "name,elapsed_seconds\r\n\r\n\"First\r\nwalk\",600\r\n\r\nSecond,120";
+        List<SessionData> imported = SessionCsvCodec.parseCsv(csv);
+        assertEquals(2, imported.size());
+        assertEquals("First\r\nwalk", imported.getFirst().name);
+        assertEquals(600, imported.getFirst().elapsedSeconds);
+        assertEquals(120, imported.getLast().elapsedSeconds);
+        assertEquals(List.of("Walk", "600", ""), SessionCsvCodec.parseCsvLine("Walk,600,"));
+        assertTrue(SessionCsvCodec.parseCsv("").isEmpty());
+    }
+
+    @Test
+    void malformedCsvQuotesRejectTheFileBeforeAnyRowsCanBeImported() {
+        for (String invalid : List.of("\"Unclosed,600", "Bare\"quote,600", "\"Closed\"oops,600")) {
+            String csv = "name,elapsed_seconds\nValid,60\n" + invalid;
+            assertThrows(IllegalArgumentException.class, () -> SessionCsvCodec.parseCsv(csv), invalid);
+        }
+    }
+
+    @Test
+    void csvImportResumeAndExportRetainsFractionalSteps() {
+        SessionData original = sampleSession();
+        original.completed = false;
+        original.speedKmh = 0.5;
+        original.stepRemainder = 0.4;
+        SessionData imported = roundTrip(original);
+        WorkoutMath.advanceOneSecond(original, new UserProfile());
+        WorkoutMath.advanceOneSecond(imported, new UserProfile());
+        assertEquals(original.steps, imported.steps);
+        assertEquals(original.stepRemainder, imported.stepRemainder);
+    }
+
+    @Test
+    void tcxAfterResumingCsvUsesTheWholeWorkoutDuration() {
+        SessionData original = sampleSession();
+        original.completed = false;
+        original.modeId = SessionMode.MARATHON.name();
+        original.elapsedSeconds = 600;
+        original.distanceKm = 1;
+        original.speedKmh = 3.6;
+        original.segments.add(new SpeedSegment(6, 600));
+        SessionData imported = roundTrip(original);
+        assertTrue(imported.segments.isEmpty(), "CSV carries totals but no speed history");
+        for (int i = 0; i < 60; i++) {
+            WorkoutMath.advanceOneSecond(imported, new UserProfile());
+        }
+        List<Double> distances = trackDistances(imported);
+        assertEquals(12, distances.size());
+        assertEquals(96.4, distances.get(1), 0.05);
+        assertEquals(1060, distances.getLast(), 0.05);
+        for (int i = 1; i < distances.size(); i++) {
+            assertTrue(distances.get(i) > distances.get(i - 1));
+        }
+    }
+
+    @Test
+    void completeSpeedHistoryStillShapesTcxDistance() {
+        SessionData session = sampleSession();
+        session.elapsedSeconds = 120;
+        session.distanceKm = 0.18;
+        session.segments = new ArrayList<>(List.of(new SpeedSegment(3.6, 60), new SpeedSegment(7.2, 60)));
+        assertEquals(List.of(0.0, 60.0, 180.0), trackDistances(session));
+    }
+
+    private static List<Double> trackDistances(SessionData session) {
+        String track = SessionTcxCodec.buildTrackpoints(session, Instant.ofEpochMilli(session.createdMillis));
+        Matcher matcher = Pattern.compile("<DistanceMeters>([0-9.]+)</DistanceMeters>").matcher(track);
+        List<Double> distances = new ArrayList<>();
+        while (matcher.find()) {
+            distances.add(Double.parseDouble(matcher.group(1)));
+        }
+        return distances;
     }
 
     @Test
@@ -265,9 +380,9 @@ class SessionTransferTest {
 
     @Test
     void nonFiniteCsvNumbersFallBackToDefaults() {
-        List<String> header = SessionTransfer.parseCsvLine("name,speed_kmh,distance_km,elapsed_seconds");
-        SessionData parsed = SessionTransfer.parseCsvSession(header,
-                SessionTransfer.parseCsvLine("Walk,NaN,Infinity,600"));
+        List<String> header = SessionCsvCodec.parseCsvLine("name,speed_kmh,distance_km,elapsed_seconds");
+        SessionData parsed = SessionCsvCodec.parseCsvSession(header,
+                SessionCsvCodec.parseCsvLine("Walk,NaN,Infinity,600"));
         assertNotNull(parsed);
         // Double.parseDouble accepts both; neither may reach the store.
         assertEquals(3.0, parsed.speedKmh, 0.0);
@@ -276,15 +391,15 @@ class SessionTransferTest {
 
     @Test
     void parseCsvLineHandlesQuotedFieldsAndDoubledQuotes() {
-        List<String> fields = SessionTransfer.parseCsvLine("plain,\"with, comma\",\"with \"\"quotes\"\"\",end");
+        List<String> fields = SessionCsvCodec.parseCsvLine("plain,\"with, comma\",\"with \"\"quotes\"\"\",end");
         assertEquals(List.of("plain", "with, comma", "with \"quotes\"", "end"), fields);
     }
 
     @Test
     void malformedRowIsSkippedNotThrown() {
-        List<String> header = SessionTransfer.parseCsvLine("name,mode,algorithm,created,speed_kmh");
-        List<String> fields = SessionTransfer.parseCsvLine("Broken,Marathon,ACSM treadmill (default),not-a-date,abc");
-        assertNull(SessionTransfer.parseCsvSession(header, fields));
+        List<String> header = SessionCsvCodec.parseCsvLine("name,mode,algorithm,created,speed_kmh");
+        List<String> fields = SessionCsvCodec.parseCsvLine("Broken,Marathon,ACSM treadmill (default),not-a-date,abc");
+        assertNull(SessionCsvCodec.parseCsvSession(header, fields));
     }
 
     @Test
@@ -298,7 +413,7 @@ class SessionTransferTest {
         // Total from segments: 3/3.6*100 + 6/3.6*150 = 333.3 m; session says 340 m.
         session.distanceKm = 0.34;
 
-        String track = SessionTransfer.buildTrackpoints(session, Instant.ofEpochMilli(session.createdMillis));
+        String track = SessionTcxCodec.buildTrackpoints(session, Instant.ofEpochMilli(session.createdMillis));
         Matcher matcher = Pattern.compile("<DistanceMeters>([0-9.]+)</DistanceMeters>").matcher(track);
         List<Double> distances = new ArrayList<>();
         while (matcher.find()) {
@@ -320,7 +435,7 @@ class SessionTransferTest {
         session.distanceKm = 0.12;
         session.segments = new ArrayList<>();
 
-        String track = SessionTransfer.buildTrackpoints(session, Instant.ofEpochMilli(session.createdMillis));
+        String track = SessionTcxCodec.buildTrackpoints(session, Instant.ofEpochMilli(session.createdMillis));
         Matcher matcher = Pattern.compile("<DistanceMeters>([0-9.]+)</DistanceMeters>").matcher(track);
         List<Double> distances = new ArrayList<>();
         while (matcher.find()) {
@@ -333,7 +448,7 @@ class SessionTransferTest {
     void tcxUsesASchemaValidSportAndEscapesTheName() {
         SessionData session = sampleSession();
         session.name = "Lunch <walk> & talk";
-        String tcx = SessionTransfer.buildTcx(session);
+        String tcx = SessionTcxCodec.buildTcx(session);
         // The TCX v2 schema only allows Running, Biking, and Other; "Walking"
         // is rejected by strict importers.
         assertTrue(tcx.contains("<Activity Sport=\"Other\">"), tcx);
