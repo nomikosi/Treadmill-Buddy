@@ -1,38 +1,23 @@
 package com.codex.desktreadmill.engine;
 
+import com.codex.desktreadmill.IdeWorkoutFeedback;
 import com.codex.desktreadmill.TreadmillBundle;
-import com.codex.desktreadmill.TreadmillNotifications;
-import com.codex.desktreadmill.TreadmillToolWindowFactory;
 import com.codex.desktreadmill.calories.CalorieAlgorithm;
-import com.codex.desktreadmill.model.GoalType;
 import com.codex.desktreadmill.model.DailyActivity;
 import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.SessionMode;
-import com.codex.desktreadmill.model.UnitSystem;
 import com.codex.desktreadmill.settings.TreadmillSettings;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.Service;
-import com.intellij.openapi.project.Project;
-import com.intellij.openapi.project.ProjectManager;
-import com.intellij.openapi.util.text.StringUtil;
-import com.intellij.openapi.wm.ToolWindow;
-import com.intellij.openapi.wm.ToolWindowManager;
 import org.jetbrains.annotations.Nullable;
 
 import javax.swing.SwingUtilities;
-import javax.swing.Timer;
-import java.awt.AWTEvent;
-import java.awt.Toolkit;
-import java.awt.event.AWTEventListener;
-import java.awt.event.KeyEvent;
-import java.time.DayOfWeek;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.time.ZoneId;
-import java.util.List;
 import java.util.ArrayList;
-import java.util.Locale;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.LongSupplier;
 
@@ -41,8 +26,10 @@ import java.util.function.LongSupplier;
  * so every project window, floating clock, and status bar widget observes the
  * same session instead of running its own timer.
  *
- * <p>All state mutations happen on the EDT: the Swing timer, the AWT activity
- * listener, and every UI caller already run there.</p>
+ * <p>All state mutations happen on the EDT: the {@link WorkoutDriver}'s timers
+ * and activity listener, and every UI caller, already run there. What the
+ * user sees or hears beyond the listeners goes through {@link WorkoutFeedback};
+ * goals, records, and move reminders each have their own small tracker.</p>
  */
 @Service(Service.Level.APP)
 public final class WorkoutEngine implements Disposable {
@@ -60,20 +47,20 @@ public final class WorkoutEngine implements Disposable {
         }
     }
 
-    private static final int TICK_INTERVAL_MILLIS = 250;
-    private static final int REMINDER_CHECK_INTERVAL_MILLIS = 60_000;
     private static final long PERSIST_INTERVAL_MILLIS = 30_000L;
     /** A tick gap this large means the machine was suspended, not that the EDT was busy. */
     private static final long SUSPEND_GAP_MILLIS = 60_000L;
 
     private final TreadmillSettings settings;
     private final LongSupplier clock;
-    /** False in unit tests: skips AWT hooks, notifications, and the beep. */
-    private final boolean interactive;
+    private final WorkoutFeedback feedback;
+    private final GoalTracker goals;
+    private final RecordTracker records;
+    private final MoveReminder moveReminder;
     private final List<Listener> listeners = new CopyOnWriteArrayList<>();
-    private final Timer timer = new Timer(TICK_INTERVAL_MILLIS, event -> tick());
-    private final Timer reminderTimer = new Timer(REMINDER_CHECK_INTERVAL_MILLIS, event -> maybeRemindToMove());
-    private final AWTEventListener activityListener = this::onUserActivity;
+    /** The IDE's timers and activity hook; absent when a test drives the engine by hand. */
+    private @Nullable WorkoutDriver driver;
+    private boolean disposed;
 
     private SessionData session;
     private boolean running;
@@ -89,35 +76,30 @@ public final class WorkoutEngine implements Disposable {
     private boolean knownToStore;
     /** Present only when the unsaved changes are paused form edits, not new activity. */
     private SessionData pausedEditBaseline;
+    /** The session whose longest-session guard the last {@link #reset()} cleared, for its undo. */
+    private @Nullable String resetRecordGuardId;
     private String statusNote = "";
     private long lastTickMillis;
     private long lastActivityMillis;
     private long lastPersistMillis;
     private long lastWalkMillis;
-    private long lastReminderMillis;
 
     public WorkoutEngine() {
-        this(TreadmillSettings.getInstance(), System::currentTimeMillis, true);
+        this(TreadmillSettings.getInstance(), System::currentTimeMillis, new IdeWorkoutFeedback());
+        driver = new WorkoutDriver(this);
+        driver.install();
     }
 
-    WorkoutEngine(TreadmillSettings settings, LongSupplier clock, boolean interactive) {
+    WorkoutEngine(TreadmillSettings settings, LongSupplier clock, WorkoutFeedback feedback) {
         this.settings = settings;
         this.clock = clock;
-        this.interactive = interactive;
+        this.feedback = feedback;
         long now = clock.getAsLong();
+        goals = new GoalTracker(settings, feedback);
+        records = new RecordTracker(settings, feedback);
+        moveReminder = new MoveReminder(settings, feedback, now);
         lastActivityMillis = now;
         lastWalkMillis = now;
-        lastReminderMillis = now;
-        if (interactive) {
-            Toolkit.getDefaultToolkit().addAWTEventListener(
-                    activityListener,
-                    AWTEvent.KEY_EVENT_MASK
-                            | AWTEvent.MOUSE_EVENT_MASK
-                            | AWTEvent.MOUSE_MOTION_EVENT_MASK
-                            | AWTEvent.MOUSE_WHEEL_EVENT_MASK
-            );
-            reminderTimer.start();
-        }
     }
 
     public static WorkoutEngine getInstance() {
@@ -126,11 +108,10 @@ public final class WorkoutEngine implements Disposable {
 
     @Override
     public void dispose() {
-        timer.stop();
-        reminderTimer.stop();
-        if (interactive) {
-            Toolkit.getDefaultToolkit().removeAWTEventListener(activityListener);
+        if (driver != null) {
+            driver.uninstall();
         }
+        disposed = true;
         if (session != null && dirty) {
             persist();
         }
@@ -235,15 +216,16 @@ public final class WorkoutEngine implements Disposable {
 
     public void clearSession() {
         retireCurrentSession();
+        // Retiring saved the walk, which marked it as the one to reopen. An
+        // empty clock must stay empty: a tool window opened later, in this
+        // project or another, would otherwise load the walk straight back.
+        settings.clearLastSessionId();
         discardSession();
     }
 
     /** Discard is deliberately separate from New, which saves the previous walk. */
     private void discardSession() {
-        timer.stop();
-        running = false;
-        autoPaused = false;
-        statusNote = "";
+        stopClock();
         session = null;
         dirty = false;
         knownToStore = false;
@@ -263,7 +245,11 @@ public final class WorkoutEngine implements Disposable {
         } else if (dirty) {
             persist();
         }
-        timer.stop();
+        stopClock();
+    }
+
+    /** Stops crediting time; the driver stops its timer when listeners next hear from the engine. */
+    private void stopClock() {
         running = false;
         autoPaused = false;
         statusNote = "";
@@ -355,49 +341,57 @@ public final class WorkoutEngine implements Disposable {
 
     public boolean undoDeletion(Deletion deletion) {
         boolean persisted = settings.saveSessions(deletion.sessions());
-        settings.restoreLastSessionId(deletion.lastSessionId());
+        // Only a marker that pointed at a restored walk comes back. Any other
+        // blank marker was cleared on purpose (New) after the deletion.
+        String lastId = deletion.lastSessionId();
+        if (deletion.sessions().stream().anyMatch(restored -> restored.id.equals(lastId))) {
+            settings.restoreLastSessionId(lastId);
+        }
         notifySessionsChanged();
         return persisted;
     }
 
     /**
      * Undo for {@link #reset()}: puts the pre-reset copy back into the history
-     * and, if it is still the session on the clock and not running again, back
-     * onto the clock.
+     * and, if it is still the session on the clock, back onto the clock. A
+     * clock restarted since the reset is stopped first - left running, its
+     * next save would overwrite the restored walk with the reset one.
      */
     public void restoreSession(SessionData previous) {
-        settings.restoreSession(previous);
-        if (session != null && session.id.equals(previous.id) && !running) {
+        boolean onClock = session != null && session.id.equals(previous.id);
+        if (onClock && running) {
+            stopClock();
+            lastWalkMillis = clock.getAsLong();
+        }
+        boolean persisted = settings.restoreSession(previous);
+        // The pre-reset walk already had its longest-session balloon.
+        if (previous.id.equals(resetRecordGuardId) && settings.getLastSessionRecordId().isEmpty()) {
+            settings.setLastSessionRecordId(previous.id);
+        }
+        resetRecordGuardId = null;
+        if (onClock) {
             session = previous.copy();
             knownToStore = true;
-            dirty = false;
+            dirty = !persisted;
             pausedEditBaseline = null;
             notifyStateChanged();
         }
         notifySessionsChanged();
     }
 
-    /** Clears the current session if it matches the given id (e.g. after deletion). */
-    public void clearSessionIf(String id) {
-        if (session != null && session.id.equals(id)) {
-            discardSession();
-        }
-    }
-
     public void reset() {
         if (session == null) {
             return;
         }
-        timer.stop();
-        running = false;
-        autoPaused = false;
-        statusNote = "";
+        stopClock();
         pausedEditBaseline = null;
         session.resetProgress();
         // Reset restarts the walk under the same id, so let it earn the
         // longest-session record again instead of staying suppressed forever.
+        resetRecordGuardId = null;
         if (session.id.equals(settings.getLastSessionRecordId())) {
             settings.setLastSessionRecordId("");
+            resetRecordGuardId = session.id;
         }
         WorkoutMath.recalcRemaining(session, settings.getProfile());
         persist();
@@ -544,9 +538,6 @@ public final class WorkoutEngine implements Disposable {
         lastTickMillis = now;
         lastActivityMillis = now;
         lastWalkMillis = now;
-        if (interactive) {
-            timer.start();
-        }
         persist();
         notifyStateChanged();
     }
@@ -555,13 +546,12 @@ public final class WorkoutEngine implements Disposable {
         if (!running) {
             return;
         }
-        timer.stop();
         running = false;
         autoPaused = auto;
         statusNote = note;
         lastWalkMillis = clock.getAsLong();
         persist();
-        maybeCelebrateRecords();
+        records.check(session, lastWalkMillis);
         notifyStateChanged();
     }
 
@@ -599,7 +589,7 @@ public final class WorkoutEngine implements Disposable {
             return;
         }
         if (now - lastPersistMillis >= PERSIST_INTERVAL_MILLIS) {
-            persist();
+            persistInBackground();
         }
         notifyStateChanged();
     }
@@ -676,38 +666,20 @@ public final class WorkoutEngine implements Disposable {
     }
 
     private void announceIntervalPhase() {
-        persist();
-        if (!interactive) {
-            return;
-        }
-        Toolkit.getDefaultToolkit().beep();
+        persistInBackground();
         boolean walking = session.intervalWalking;
-        long minutes = (walking ? session.intervalWalkSeconds : session.intervalBreakSeconds) / 60L;
-        // Transient: a block chime is stale the moment the block ends, and a
-        // three-hour interval walk would otherwise pile up a dozen dead rows.
-        TreadmillNotifications.transientInfo(
-                TreadmillBundle.message(walking ? "notification.interval.walk.title" : "notification.interval.break.title"),
-                TreadmillBundle.message(walking ? "notification.interval.walk.content" : "notification.interval.break.content", minutes)
-        );
+        feedback.intervalBlockStarted(walking,
+                (walking ? session.intervalWalkSeconds : session.intervalBreakSeconds) / 60L);
     }
 
     private void completeSession() {
-        timer.stop();
-        running = false;
-        autoPaused = false;
-        statusNote = "";
+        stopClock();
         session.completed = true;
         pausedEditBaseline = null;
         lastWalkMillis = clock.getAsLong();
         persist();
-        maybeCelebrateRecords();
-        if (interactive) {
-            Toolkit.getDefaultToolkit().beep();
-            TreadmillNotifications.info(
-                    TreadmillBundle.message("notification.session.complete.title"),
-                    completionMessage(session, settings.getUnitSystem())
-            );
-        }
+        records.check(session, lastWalkMillis);
+        feedback.sessionCompleted(session, settings.getUnitSystem());
         SessionData completed = session;
         for (Listener listener : listeners) {
             listener.sessionCompleted(completed);
@@ -715,52 +687,9 @@ public final class WorkoutEngine implements Disposable {
         notifyStateChanged();
     }
 
-    /**
-     * The completion balloon in the user's display units - it used to print
-     * the raw kilometres under a hard-coded "km" for imperial users too. The
-     * name is escaped because balloon content is rendered as HTML.
-     */
-    static String completionMessage(SessionData session, UnitSystem units) {
-        return TreadmillBundle.message("notification.session.complete.content",
-                StringUtil.escapeXmlEntities(session.name),
-                String.format("%.2f", units.distanceFromKm(session.distanceKm)),
-                units.distanceUnit(),
-                String.format("%.0f", session.calories));
-    }
-
-    private void maybeRemindToMove() {
-        int reminderMinutes = settings.getMoveReminderMinutes();
-        if (reminderMinutes <= 0 || running) {
-            return;
-        }
-        long now = clock.getAsLong();
-        long reminderMillis = reminderMinutes * 60_000L;
-        if (now - lastWalkMillis < reminderMillis || now - lastReminderMillis < reminderMillis) {
-            return;
-        }
-        lastReminderMillis = now;
-        // Goes through TreadmillNotifications so it picks up the shared
-        // auto-close behaviour instead of being the one balloon that lingers.
-        TreadmillNotifications.withAction(
-                null,
-                TreadmillBundle.message("notification.move.title"),
-                TreadmillBundle.message("notification.move.content", reminderMinutes),
-                TreadmillBundle.message("notification.move.action"),
-                WorkoutEngine::openToolWindow);
-    }
-
-    private static void openToolWindow() {
-        for (Project project : ProjectManager.getInstance().getOpenProjects()) {
-            if (project.isDisposed()) {
-                continue;
-            }
-            ToolWindow toolWindow = ToolWindowManager.getInstance(project)
-                    .getToolWindow(TreadmillToolWindowFactory.TOOL_WINDOW_ID);
-            if (toolWindow != null) {
-                toolWindow.activate(null);
-                return;
-            }
-        }
+    /** Called by the driver's minute timer. */
+    void checkMoveReminder() {
+        moveReminder.check(clock.getAsLong(), running, lastWalkMillis);
     }
 
     /** The instant the inactivity auto-pause takes effect, or {@link Long#MAX_VALUE} while it cannot. */
@@ -783,33 +712,13 @@ public final class WorkoutEngine implements Disposable {
         return lastActivityMillis + idleMinutes * 60_000L;
     }
 
-    private void onUserActivity(AWTEvent event) {
+    /** Keyboard or mouse activity seen by the driver: it keeps a running session from idling out. */
+    void noteUserActivity() {
         lastActivityMillis = clock.getAsLong();
-        // Any activity keeps the session alive, but only typing resumes an
-        // auto-paused one: scrolling to read code doesn't mean you're walking again.
-        if (autoPaused && event instanceof KeyEvent keyEvent && isTypingKey(keyEvent)) {
-            SwingUtilities.invokeLater(this::resumeAfterTyping);
-        }
     }
 
-    /**
-     * A key press that means "typing": not an action key (F-keys, arrows,
-     * Page Up) and not a lone modifier or lock key - a stray Shift or Ctrl
-     * while reaching for the mouse is not evidence of walking again.
-     */
-    static boolean isTypingKey(KeyEvent event) {
-        if (event.getID() != KeyEvent.KEY_PRESSED || event.isActionKey()) {
-            return false;
-        }
-        return switch (event.getKeyCode()) {
-            case KeyEvent.VK_SHIFT, KeyEvent.VK_CONTROL, KeyEvent.VK_ALT, KeyEvent.VK_ALT_GRAPH,
-                    KeyEvent.VK_META, KeyEvent.VK_WINDOWS, KeyEvent.VK_CONTEXT_MENU,
-                    KeyEvent.VK_CAPS_LOCK, KeyEvent.VK_NUM_LOCK, KeyEvent.VK_SCROLL_LOCK -> false;
-            default -> true;
-        };
-    }
-
-    private void resumeAfterTyping() {
+    /** The driver's response to typing while auto-paused. */
+    void resumeAfterTyping() {
         if (!autoPaused || running || session == null || session.completed) {
             return;
         }
@@ -834,184 +743,42 @@ public final class WorkoutEngine implements Disposable {
         // transition try again instead of believing it is safe on disk.
         dirty = !persisted;
         lastPersistMillis = clock.getAsLong();
-        for (Listener listener : listeners) {
-            listener.sessionsPersisted();
-        }
-        if (interactive) {
-            // One deep copy of the history, shared by both goal checks.
-            List<SessionData> history = settings.getSessions();
-            maybeCelebrateDailyGoal(history);
-            maybeCelebrateWeeklyGoal(history);
-        }
+        afterPersist();
         return persisted;
     }
 
-    private void maybeCelebrateDailyGoal(List<SessionData> history) {
-        GoalType goalType = settings.getDailyGoalType();
-        double target = settings.getDailyGoalValue();
-        if (goalType == GoalType.NONE || target <= 0) {
-            return;
-        }
-        ZoneId zone = ZoneId.systemDefault();
-        LocalDate today = Instant.ofEpochMilli(clock.getAsLong()).atZone(zone).toLocalDate();
-        if (settings.getLastGoalAchievedDay() == today.toEpochDay()) {
-            return;
-        }
-        long startOfToday = today.atStartOfDay(zone).toInstant().toEpochMilli();
-        SessionStats.Totals totals = SessionStats.totalsSince(history, startOfToday);
-        double progress = switch (goalType) {
-            case STEPS -> totals.steps;
-            case DISTANCE -> totals.distanceKm;
-            case CALORIES -> totals.calories;
-            case NONE -> 0.0;
-        };
-        if (progress >= target) {
-            settings.setLastGoalAchievedDay(today.toEpochDay());
-            TreadmillNotifications.info(
-                    TreadmillBundle.message("notification.goal.title"),
-                    TreadmillBundle.message("notification.goal.content",
-                            goalType.formatValue(target, settings.getUnitSystem()))
-            );
-        }
-    }
-
-    private void maybeCelebrateWeeklyGoal(List<SessionData> history) {
-        GoalType goalType = settings.getWeeklyGoalType();
-        double target = settings.getWeeklyGoalValue();
-        if (goalType == GoalType.NONE || target <= 0) {
-            return;
-        }
-        ZoneId zone = ZoneId.systemDefault();
-        LocalDate today = Instant.ofEpochMilli(clock.getAsLong()).atZone(zone).toLocalDate();
-        LocalDate weekStart = today.with(DayOfWeek.MONDAY);
-        if (settings.getLastWeeklyGoalAchievedWeek() == weekStart.toEpochDay()) {
-            return;
-        }
-        long startOfWeek = weekStart.atStartOfDay(zone).toInstant().toEpochMilli();
-        SessionStats.Totals totals = SessionStats.totalsSince(history, startOfWeek);
-        double progress = switch (goalType) {
-            case STEPS -> totals.steps;
-            case DISTANCE -> totals.distanceKm;
-            case CALORIES -> totals.calories;
-            case NONE -> 0.0;
-        };
-        if (progress >= target) {
-            settings.setLastWeeklyGoalAchievedWeek(weekStart.toEpochDay());
-            TreadmillNotifications.info(
-                    TreadmillBundle.message("notification.goal.weekly.title"),
-                    TreadmillBundle.message("notification.goal.weekly.content",
-                            goalType.formatValue(target, settings.getUnitSystem()))
-            );
-        }
-    }
-
     /**
-     * Called when a session pauses or completes. A record only counts when the
-     * current session beats every <em>other</em> session, and today beats every
-     * other day: measuring against a best that already includes the current
-     * walk would let a session break its own earlier state, which on a fresh
-     * install means congratulating the very first walk for beating itself.
-     *
-     * <p>Each record is announced once, guarded by persisted state keyed the
-     * way the record is measured - by session id for the longest session, by
-     * day for the day totals - so neither a mid-walk pause, a second session
-     * the same afternoon, nor an IDE restart re-fires it.</p>
+     * The 30-second autosave and interval switches, which recur all walk long:
+     * the history holds the walk as soon as this returns, and the file is
+     * written on the store's thread instead of the EDT. The store owns the
+     * write from here, retries included, so the session is no longer dirty.
+     * Listeners hear about it once the write is done - reading the history
+     * earlier would only wait for that write.
      */
-    private void maybeCelebrateRecords() {
-        if (session == null || session.elapsedSeconds == 0) {
+    private void persistInBackground() {
+        if (session == null) {
             return;
         }
-        ZoneId zone = ZoneId.systemDefault();
-        LocalDate today = Instant.ofEpochMilli(clock.getAsLong()).atZone(zone).toLocalDate();
-        long epochDay = today.toEpochDay();
-        BrokenRecords broken = brokenRecords(
-                settings.getSessions(), session, today, zone,
-                settings.getLastSessionRecordId(),
-                settings.getLastDistanceRecordDay(),
-                settings.getLastStepsRecordDay());
-
-        if (broken.longestSession) {
-            settings.setLastSessionRecordId(session.id);
-            announceRecord(TreadmillBundle.message("notification.record.session",
-                    formatDuration(session.elapsedSeconds), formatDuration(broken.previousLongestSeconds)));
-        }
-        if (broken.dayDistance) {
-            settings.setLastDistanceRecordDay(epochDay);
-            announceRecord(TreadmillBundle.message("notification.record.distance",
-                    String.format("%.2f", settings.getUnitSystem().distanceFromKm(broken.todayDistanceKm)),
-                    settings.getUnitSystem().distanceUnit()));
-        }
-        if (broken.daySteps) {
-            settings.setLastStepsRecordDay(epochDay);
-            announceRecord(TreadmillBundle.message("notification.record.steps",
-                    String.format("%,d", broken.todaySteps)));
+        CompletableFuture<Boolean> written = settings.saveSessionLater(session);
+        pausedEditBaseline = null;
+        knownToStore = true;
+        dirty = false;
+        lastPersistMillis = clock.getAsLong();
+        if (written.isDone()) {
+            afterPersist();
+        } else {
+            written.whenComplete((persisted, error) -> SwingUtilities.invokeLater(this::afterPersist));
         }
     }
 
-    /** Which records a pause or completion broke, and the numbers to announce. */
-    static final class BrokenRecords {
-        boolean longestSession;
-        boolean dayDistance;
-        boolean daySteps;
-        long previousLongestSeconds;
-        double todayDistanceKm;
-        long todaySteps;
-    }
-
-    /**
-     * Pure record decision, split out from the announcement so it can be tested
-     * without an IDE. {@code history} is expected to already contain
-     * {@code session} (the engine persists before checking); the current
-     * session and today are excluded from their own baselines.
-     */
-    static BrokenRecords brokenRecords(
-            List<SessionData> history,
-            SessionData session,
-            LocalDate today,
-            ZoneId zone,
-            String lastSessionRecordId,
-            long lastDistanceRecordDay,
-            long lastStepsRecordDay
-    ) {
-        BrokenRecords broken = new BrokenRecords();
-        long epochDay = today.toEpochDay();
-        broken.previousLongestSeconds = SessionStats.longestSessionSeconds(history, session.id);
-        broken.longestSession = broken.previousLongestSeconds > 0
-                && session.elapsedSeconds > broken.previousLongestSeconds
-                // A blank id can't be told apart from the "nothing announced
-                // yet" sentinel, so never let it match.
-                && !(!session.id.isEmpty() && session.id.equals(lastSessionRecordId));
-
-        long startOfToday = today.atStartOfDay(zone).toInstant().toEpochMilli();
-        SessionStats.Totals todayTotals = SessionStats.totalsSince(history, startOfToday);
-        SessionStats.DayTotals bestOtherDay = SessionStats.bestDay(history, zone, epochDay);
-        broken.todayDistanceKm = todayTotals.distanceKm;
-        broken.todaySteps = todayTotals.steps;
-        broken.dayDistance = bestOtherDay.distanceKm > 0
-                && todayTotals.distanceKm > bestOtherDay.distanceKm
-                && lastDistanceRecordDay != epochDay;
-        broken.daySteps = bestOtherDay.steps > 0
-                && todayTotals.steps > bestOtherDay.steps
-                && lastStepsRecordDay != epochDay;
-        return broken;
-    }
-
-    /** The guard is consumed either way; only the balloon needs a real IDE. */
-    private void announceRecord(String content) {
-        if (!interactive) {
+    private void afterPersist() {
+        if (disposed) {
             return;
         }
-        TreadmillNotifications.info(TreadmillBundle.message("notification.record.title"), content);
-    }
-
-    static String formatDuration(long seconds) {
-        long hours = seconds / 3600;
-        long minutes = seconds % 3600 / 60;
-        if (hours > 0) {
-            return String.format(Locale.ROOT, "%dh %02dm", hours, minutes);
+        for (Listener listener : listeners) {
+            listener.sessionsPersisted();
         }
-        // Sub-minute walks would otherwise both render as a meaningless "0m".
-        return minutes > 0 ? minutes + "m" : seconds + "s";
+        goals.check(settings::getSessions, clock.getAsLong());
     }
 
     private void notifyStateChanged() {

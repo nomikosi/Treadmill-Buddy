@@ -94,12 +94,14 @@ You can edit everything later from `Settings | Tools | Treadmill Buddy`; switchi
 - If the machine goes to sleep, the session auto-pauses instead of crediting the slept time.
 - Pause and Resume preserve partial seconds, including after loading a session or restarting the IDE.
 - New walking activity is recorded by day, so resuming an older session or walking across midnight contributes to the correct daily goals, charts, and streaks. Historical walks without a daily breakdown keep their original creation-date attribution.
-- If another IDE holds the history lock, pending saves and deletions are retried in the background; the plugin never writes without the lock.
-- Starting a new session, switching mode, or loading another session while one is running pauses and saves the running one first, so no walked time is lost.
-- `Reset` on a session with walked time asks for confirmation, because it clears that walk from the history; the notification offers an undo.
+- If another IDE holds the history lock, pending saves and deletions are retried in the background; the plugin never writes without the lock. Brief contention is retried quietly, a warning appears only when the lock stays busy, and closing the IDE waits up to two seconds for it.
+- The 30-second autosave writes the history file on a background thread, so a long history never stalls the editor.
+- Starting a new session, switching mode, or loading another session while one is running pauses and saves the running one first, so no walked time is lost. `New` leaves the clock empty, also after a restart or when the tool window opens in another project.
+- `Reset` on a session with walked time asks for confirmation, because it clears that walk from the history; the notification offers an undo, which works even after the clock was started again.
+- Number fields accept `1.5` and `1,5`. Thousands separators work where they cannot be misread (`10,000` steps, `1,234.5`); a decimal field flags an ambiguous `1,500` and suggests `1500` or `1.5`.
 - Session completion shows a notification (no modal dialog interrupting your typing).
 - Saved sessions appear in a list with duration, distance, calories, and date; double-click or press Enter to load one, use the toolbar to delete, import CSV/JSON, or export sessions as CSV, JSON, or TCX. The list shows the 25 most recent sessions with a Show All toggle, and refreshes when the IDE regains focus so walks saved in another JetBrains IDE appear immediately.
-- The CSV export always uses metric columns (`speed_kmh`, `distance_km`), regardless of the display units, so exported data stays comparable, and re-importing skips sessions you already have.
+- The CSV export always uses metric columns (`speed_kmh`, `distance_km`), regardless of the display units, so exported data stays comparable, and re-importing skips sessions you already have. Modes and algorithms are written as stable ids (`CALORIE_BURN`, `ACSM_FLAT`); older exports with English labels still import.
 - CSV names can contain commas, quotes, and line breaks. Malformed quoting rejects the import before any sessions are saved.
 - History cleanup uses the latest recorded activity date and keeps the session currently on the clock, including while paused.
 - TCX exports use speed segments when they cover the whole workout; sessions with incomplete speed histories use evenly interpolated distance across the full duration.
@@ -113,7 +115,9 @@ You can edit everything later from `Settings | Tools | Treadmill Buddy`; switchi
 ./gradlew verifyPlugin   # runs the IntelliJ Plugin Verifier
 ```
 
-The project targets IntelliJ Platform 2024.3+ (`sinceBuild 243`) and only depends on `com.intellij.modules.platform`, so it runs in IntelliJ IDEA, PyCharm, WebStorm, and every other JetBrains IDE. Building needs a Java 21 JDK, the version the 2024.3 platform is compiled for; Gradle picks one up from the usual locations.
+The project targets IntelliJ Platform 2024.3+ (`sinceBuild 243`) and only depends on `com.intellij.modules.platform`, so it runs in IntelliJ IDEA, PyCharm, WebStorm, and every other JetBrains IDE. Building needs a Java 21 JDK, the version the 2024.3 platform is compiled for; Gradle picks one up from the usual locations. `buildPlugin` also indexes the settings page for Settings search, which starts a headless IDE once. The verifier checks IntelliJ IDEA Community 2024.3 through 2025.2 and the unified IntelliJ IDEA from 2025.3 on; Community is not published after 2025.2.
+
+Source layout: `engine` holds the workout clock and its trackers (goals, records, move reminders), `storage` the shared history file, `transfer` the CSV/JSON/TCX formats, `settings` the IDE settings and their forms, and `ui` the tool window, status bar widget, and floating clock.
 
 ## Releasing
 

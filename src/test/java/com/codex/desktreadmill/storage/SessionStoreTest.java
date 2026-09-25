@@ -1,4 +1,4 @@
-package com.codex.desktreadmill.settings;
+package com.codex.desktreadmill.storage;
 
 import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.SpeedSegment;
@@ -145,11 +145,12 @@ class SessionStoreTest {
         Path blocker = tempDir.resolve("blocker");
         Files.writeString(blocker, "not a directory");
         SessionStore store = new SessionStore(blocker.resolve("sessions.json"));
-        List<String> failures = new ArrayList<>();
-        store.onWriteFailure(() -> failures.add("failed"));
+        List<SessionStore.WriteFailure> failures = new ArrayList<>();
+        store.onWriteFailure(failures::add);
 
         store.saveSession(session("a", "Doomed walk"));
-        assertEquals(1, failures.size(), "a save that stayed in memory only must be reported");
+        assertEquals(List.of(SessionStore.WriteFailure.IO_ERROR), failures,
+                "a save that stayed in memory only must be reported at once");
     }
 
     @Test

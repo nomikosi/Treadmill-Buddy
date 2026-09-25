@@ -94,7 +94,10 @@ class MetricInputTest {
     void equivalentTextDoesNotCountAsAnEdit() {
         MetricInput input = new MetricInput(MetricInput.Quantity.SPEED, 2);
         input.display(3, UnitSystem.IMPERIAL);
-        assertEquals(3, input.read(" 1,860 ", UnitSystem.IMPERIAL), 0.0);
+        // "1,860" itself is ambiguous (1860 or 1.86) and rejected; see NumericInputTest.
+        for (String text : new String[]{" 1,86 ", "1.860", "1,8600"}) {
+            assertEquals(3, input.read(text, UnitSystem.IMPERIAL), 0.0, text);
+        }
     }
 
     @Test

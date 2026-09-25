@@ -1,21 +1,25 @@
 package com.codex.desktreadmill.model;
 
+import com.codex.desktreadmill.TreadmillBundle;
+import org.jetbrains.annotations.PropertyKey;
+
 /**
  * Display unit system. All values are stored metric internally; conversion
- * happens only at the UI boundary.
+ * happens only at the UI boundary. Unit symbols are the same in every
+ * language and stay in code; the unit-system names come from the bundle.
  */
 public enum UnitSystem {
-    METRIC("Metric (km, kg, cm)"),
-    IMPERIAL("Imperial (mi, lb, in)");
+    METRIC("units.metric"),
+    IMPERIAL("units.imperial");
 
     private static final double KM_PER_MILE = 1.609344;
     private static final double KG_PER_POUND = 0.45359237;
     private static final double CM_PER_INCH = 2.54;
 
-    private final String label;
+    private final String labelKey;
 
-    UnitSystem(String label) {
-        this.label = label;
+    UnitSystem(@PropertyKey(resourceBundle = TreadmillBundle.BUNDLE) String labelKey) {
+        this.labelKey = labelKey;
     }
 
     public double distanceFromKm(double km) {
@@ -77,6 +81,6 @@ public enum UnitSystem {
 
     @Override
     public String toString() {
-        return label;
+        return TreadmillBundle.message(labelKey);
     }
 }

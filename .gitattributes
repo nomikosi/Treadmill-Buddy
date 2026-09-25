@@ -1,0 +1,9 @@
+# Files the Linux CI runners execute or parse keep LF endings on every
+# checkout; release.yml reads the version out of build.gradle with sed.
+/gradlew        text eol=lf
+*.gradle        text eol=lf
+*.properties    text eol=lf
+*.yml           text eol=lf
+
+*.jar           binary
+*.png           binary

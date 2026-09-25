@@ -1,4 +1,4 @@
-package com.codex.desktreadmill.settings;
+package com.codex.desktreadmill.storage;
 
 import com.codex.desktreadmill.model.DailyActivity;
 import com.codex.desktreadmill.model.SessionData;
@@ -10,6 +10,9 @@ import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -116,19 +119,100 @@ class SessionStoreRetryTest {
     }
 
     @Test
-    void closingTheStoreCancelsRetries() throws Exception {
+    void closingTheStoreCancelsRetriesAndGivesUpOnALockThatStaysHeld() throws Exception {
         Path file = directory.resolve("sessions.json");
         ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1);
         SessionStore store = new SessionStore(file, executor);
+        store.setCloseLockWaitMillis(100);
         try (var channel = FileChannel.open(directory.resolve("sessions.json.lock"),
                 StandardOpenOption.CREATE, StandardOpenOption.WRITE);
              var lock = channel.lock()) {
             assertFalse(store.saveSession(walk("pending")));
             store.close();
             assertTrue(executor.isShutdown());
-            assertFalse(Files.exists(file));
+            assertFalse(Files.exists(file), "closing waits for the lock, but never writes without it");
         } finally {
             store.close();
+        }
+    }
+
+    @Test
+    void closingWaitsBrieflyForAnotherWriterToReleaseTheLock() throws Exception {
+        Path file = directory.resolve("sessions.json");
+        SessionStore store = new SessionStore(file, new ScheduledThreadPoolExecutor(1));
+        var channel = FileChannel.open(directory.resolve("sessions.json.lock"),
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+        var lock = channel.lock();
+        assertFalse(store.saveSession(walk("pending")));
+        Thread releaser = new Thread(() -> {
+            try {
+                Thread.sleep(200);
+                lock.release();
+                channel.close();
+            } catch (Exception error) {
+                throw new RuntimeException(error);
+            }
+        });
+        releaser.start();
+        store.close(); // Shutdown: another IDE's write must not cost this walk.
+        releaser.join();
+        assertNotNull(new SessionStore(file).findSession("pending"));
+    }
+
+    @Test
+    void aBusyLockIsReportedOnlyOnceItOutlastsSeveralRetries() throws Exception {
+        Path file = directory.resolve("sessions.json");
+        SessionStore store = new SessionStore(file);
+        List<SessionStore.WriteFailure> failures = new ArrayList<>();
+        store.onWriteFailure(failures::add);
+        try (var channel = FileChannel.open(directory.resolve("sessions.json.lock"),
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+             var lock = channel.lock()) {
+            for (int attempt = 1; attempt <= 4; attempt++) {
+                assertFalse(store.saveSession(walk("pending")));
+            }
+            assertTrue(failures.isEmpty(), "another IDE's short write is not a disk failure");
+            assertFalse(store.saveSession(walk("pending")));
+            assertFalse(store.saveSession(walk("pending")));
+            assertEquals(List.of(SessionStore.WriteFailure.LOCK_BUSY), failures, "reported once, on the fifth");
+        }
+        assertTrue(store.flushPendingWrites());
+        assertNotNull(new SessionStore(file).findSession("pending"));
+    }
+
+    @Test
+    void laterSavesAreVisibleAtOnceAndWrittenInTheBackground() throws Exception {
+        Path file = directory.resolve("sessions.json");
+        try (SessionStore store = new SessionStore(file, new ScheduledThreadPoolExecutor(1))) {
+            CompletableFuture<Boolean> written = store.saveSessionLater(walk("autosaved"));
+            assertNotNull(store.findSession("autosaved"), "the history holds it before the write");
+            assertTrue(written.get(5, TimeUnit.SECONDS));
+            assertNotNull(new SessionStore(file).findSession("autosaved"));
+        }
+        SessionStore synchronous = new SessionStore(file);
+        CompletableFuture<Boolean> inline = synchronous.saveSessionLater(walk("inline"));
+        assertTrue(inline.isDone() && inline.join(), "without an executor the write happens before returning");
+    }
+
+    @Test
+    void aLaterSaveDuringABusyLockRidesOnTheScheduledRetry() throws Exception {
+        Path file = directory.resolve("sessions.json");
+        try (SessionStore store = new SessionStore(file, new ScheduledThreadPoolExecutor(1))) {
+            try (var channel = FileChannel.open(directory.resolve("sessions.json.lock"),
+                    StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+                 var lock = channel.lock()) {
+                assertFalse(store.saveSession(walk("first")));
+                CompletableFuture<Boolean> later = store.saveSessionLater(walk("second"));
+                assertTrue(later.isDone() && !later.join(), "a retry is already queued; nothing waits on it");
+            }
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            SessionStore onDisk = new SessionStore(file);
+            while (onDisk.findSession("second") == null && System.nanoTime() < deadline) {
+                Thread.sleep(50);
+                onDisk = new SessionStore(file);
+            }
+            assertNotNull(onDisk.findSession("first"));
+            assertNotNull(onDisk.findSession("second"));
         }
     }
 

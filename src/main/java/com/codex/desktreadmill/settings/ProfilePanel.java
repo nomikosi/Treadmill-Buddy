@@ -19,6 +19,8 @@ import javax.swing.JList;
 import javax.swing.JPanel;
 import java.awt.BorderLayout;
 import java.awt.Component;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * The profile and defaults form shared by the Settings page and the first-run
@@ -124,7 +126,11 @@ public final class ProfilePanel {
         if (metricValue <= 0) {
             return "";
         }
-        return type == GoalType.DISTANCE ? distanceInput.display(metricValue, fieldUnits) : format(metricValue);
+        return switch (type) {
+            case DISTANCE -> distanceInput.display(metricValue, fieldUnits);
+            case STEPS -> String.valueOf(Math.round(metricValue));
+            case CALORIES, NONE -> format(metricValue);
+        };
     }
 
     /**
@@ -188,17 +194,24 @@ public final class ProfilePanel {
     }
 
     private double goalValueMetric(GoalType type, String text, MetricInput distanceInput) {
-        if (type == GoalType.NONE) {
-            return 0.0;
-        }
-        double value = parseDouble(text);
+        double value = goalNumber(type, text);
         if (value <= 0) {
             return 0.0;
         }
-        if (type != GoalType.DISTANCE) {
-            return value;
-        }
-        return distanceInput.read(text, getUnitSystem());
+        return type == GoalType.DISTANCE ? distanceInput.read(text, getUnitSystem()) : value;
+    }
+
+    /**
+     * The goal field as typed, or -1 when it is unusable. Steps are counted in
+     * whole numbers, so "10,000" can only mean ten thousand there; calories and
+     * distances are decimals and reject a separator that could mean either.
+     */
+    private static double goalNumber(GoalType type, String text) {
+        return switch (type) {
+            case NONE -> -1.0;
+            case STEPS -> NumericInput.parseWholeNumber(text);
+            case DISTANCE, CALORIES -> parseDouble(text);
+        };
     }
 
     public int getStreakRestDaysPerWeek() {
@@ -219,6 +232,12 @@ public final class ProfilePanel {
 
     public String validateInput() {
         UnitSystem units = getUnitSystem();
+        for (JBTextField decimalField : decimalFields()) {
+            String ambiguity = NumericInput.ambiguityMessage(decimalField.getText());
+            if (ambiguity != null) {
+                return ambiguity;
+            }
+        }
         double weightKg = getProfile().weightKg;
         double heightCm = getProfile().heightCm;
         if (weightKg < 20 || weightKg > 300) {
@@ -239,10 +258,11 @@ public final class ProfilePanel {
         if (moveReminderMinutes < 0 || moveReminderMinutes > 480) {
             return TreadmillBundle.message("settings.validation.moveReminder");
         }
-        if (getDailyGoalType() != GoalType.NONE && parseDouble(goalValueField.getText()) <= 0) {
+        if (getDailyGoalType() != GoalType.NONE && goalNumber(getDailyGoalType(), goalValueField.getText()) <= 0) {
             return TreadmillBundle.message("settings.validation.dailyGoal");
         }
-        if (getWeeklyGoalType() != GoalType.NONE && parseDouble(weeklyGoalValueField.getText()) <= 0) {
+        if (getWeeklyGoalType() != GoalType.NONE
+                && goalNumber(getWeeklyGoalType(), weeklyGoalValueField.getText()) <= 0) {
             return TreadmillBundle.message("settings.validation.weeklyGoal");
         }
         int restDays = getStreakRestDaysPerWeek();
@@ -332,17 +352,26 @@ public final class ProfilePanel {
         };
     }
 
+    /** The fields holding decimals, whose separators could be read as thousands or as a decimal point. */
+    private List<JBTextField> decimalFields() {
+        List<JBTextField> fields = new ArrayList<>(List.of(weightField, heightField));
+        if (getDailyGoalType() == GoalType.DISTANCE || getDailyGoalType() == GoalType.CALORIES) {
+            fields.add(goalValueField);
+        }
+        if (getWeeklyGoalType() == GoalType.DISTANCE || getWeeklyGoalType() == GoalType.CALORIES) {
+            fields.add(weeklyGoalValueField);
+        }
+        return fields;
+    }
+
     /** The field's number, or -1 when it is not a usable one: "NaN" parses but passes every range check. */
     private static double parseDouble(String text) {
         return NumericInput.parse(text);
     }
 
     private static int parseInt(String text) {
-        try {
-            return Integer.parseInt(text.trim());
-        } catch (NumberFormatException ignored) {
-            return -1;
-        }
+        long value = NumericInput.parseWholeNumber(text);
+        return value > Integer.MAX_VALUE ? -1 : (int) value;
     }
 
     static String format(double value) {

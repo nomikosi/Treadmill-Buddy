@@ -12,6 +12,11 @@ on:
     tags:
       - 'v*'
 
+# Publishing uses the Marketplace token, not GitHub's; this job only reads
+# the repository, so the token it runs with can't write to it either.
+permissions:
+  contents: read
+
 jobs:
   release:
     runs-on: ubuntu-latest

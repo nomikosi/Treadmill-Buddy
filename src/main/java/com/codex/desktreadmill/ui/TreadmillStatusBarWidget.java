@@ -99,12 +99,7 @@ public final class TreadmillStatusBarWidget implements StatusBarWidget, StatusBa
         ZoneId zone = ZoneId.systemDefault();
         long startOfToday = LocalDate.now(zone).atStartOfDay(zone).toInstant().toEpochMilli();
         SessionStats.Totals today = SessionStats.totalsSince(settings.getSessions(), startOfToday);
-        double progress = switch (goalType) {
-            case STEPS -> today.steps;
-            case DISTANCE -> today.distanceKm;
-            case CALORIES -> today.calories;
-            case NONE -> 0.0;
-        };
+        double progress = SessionStats.goalProgress(goalType, today);
         int percent = (int) Math.max(0, Math.round(progress / target * 100));
         String glyph = GOAL_GLYPHS[Math.min(GOAL_GLYPHS.length - 1, percent * (GOAL_GLYPHS.length - 1) / 100)];
         cachedGoalText = " · " + glyph + " " + Math.min(percent, 999) + "%";

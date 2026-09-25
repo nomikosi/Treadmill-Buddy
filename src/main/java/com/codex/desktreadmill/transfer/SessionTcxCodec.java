@@ -1,4 +1,4 @@
-package com.codex.desktreadmill.ui;
+package com.codex.desktreadmill.transfer;
 
 import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.SpeedSegment;
@@ -7,7 +7,7 @@ import java.time.Instant;
 import java.util.Locale;
 
 /** TCX conversion without UI or file-system access. */
-final class SessionTcxCodec {
+public final class SessionTcxCodec {
     private SessionTcxCodec() {
     }
 
@@ -17,7 +17,7 @@ final class SessionTcxCodec {
      * as "Walking" fails validation in strict importers. Services show it as a
      * generic workout that can be relabelled as a walk after import.
      */
-    static String buildTcx(SessionData session) {
+    public static String buildTcx(SessionData session) {
         Instant start = Instant.ofEpochMilli(session.createdMillis);
         // String.format with Locale.ROOT, not "...".formatted(...): the latter
         // uses the default locale, and %d renders Eastern Arabic digits under

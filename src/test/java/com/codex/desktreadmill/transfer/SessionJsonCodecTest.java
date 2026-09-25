@@ -1,4 +1,4 @@
-package com.codex.desktreadmill.ui;
+package com.codex.desktreadmill.transfer;
 
 import com.codex.desktreadmill.model.DailyActivity;
 import com.codex.desktreadmill.model.SessionData;

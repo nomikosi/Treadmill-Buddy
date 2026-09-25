@@ -8,24 +8,17 @@ import com.codex.desktreadmill.engine.WorkoutInputs;
 import com.codex.desktreadmill.engine.WorkoutMath;
 import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.SessionMode;
-import com.codex.desktreadmill.model.SpeedPreset;
-import com.codex.desktreadmill.model.SpeedSegment;
 import com.codex.desktreadmill.model.UnitSystem;
 import com.codex.desktreadmill.settings.ProfileDialog;
 import com.codex.desktreadmill.settings.TreadmillConfigurable;
 import com.codex.desktreadmill.settings.TreadmillSettings;
-import com.intellij.ide.DataManager;
 import com.intellij.openapi.Disposable;
-import com.intellij.openapi.actionSystem.AnActionEvent;
-import com.intellij.openapi.actionSystem.DefaultActionGroup;
 import com.intellij.openapi.options.ShowSettingsUtil;
-import com.intellij.openapi.project.DumbAwareAction;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.ComboBox;
 import com.intellij.openapi.ui.ComponentValidator;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.ui.ValidationInfo;
-import com.intellij.openapi.ui.popup.JBPopupFactory;
 import com.intellij.openapi.util.text.StringUtil;
 import com.intellij.ui.DocumentAdapter;
 import com.intellij.ui.JBColor;
@@ -35,6 +28,7 @@ import com.intellij.ui.components.JBTextField;
 import com.intellij.util.ui.FormBuilder;
 import com.intellij.util.ui.JBUI;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import javax.swing.JButton;
 import javax.swing.JComponent;
@@ -52,6 +46,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /**
@@ -97,21 +92,10 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
 
     private boolean populatingFields;
     private boolean highSpeedWarningShown;
+    /** The name this panel generated last; a field still showing it was not named by the user. */
+    private String generatedName = "";
     private UnitSystem currentUnits;
-    /**
-     * What this panel last saw of the shared session. The engine is
-     * application-wide, so a change made in another project window has to be
-     * mirrored into these fields - without clobbering an edit in progress here.
-     */
-    private String seenSessionId;
-    private double seenSpeedKmh;
-    private double seenInclinePercent;
-    private String seenAlgorithmId = "";
-    private String seenName = "";
-    private double seenTargetCalories;
-    private double seenTargetFatKg;
-    private long seenWalkSeconds;
-    private long seenBreakSeconds;
+    private final SeenSession seen = new SeenSession();
 
     public TreadmillPanel(Project project) {
         super(new BorderLayout());
@@ -124,7 +108,7 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         ComboHelp.configureModeCombo(modeCombo);
         ComboHelp.configureAlgorithmCombo(algorithmCombo, settings::getSelectedAlgorithm);
         algorithmCombo.setSelectedItem(settings.getSelectedAlgorithm());
-        sessionNameField.setText(defaultSessionName(SessionMode.MARATHON));
+        showDefaultName(SessionMode.MARATHON);
         floatingClock = new FloatingClockWindow(project, this::toggleRunning, () -> saveCurrentSession(true));
         savedSessionsPanel = new SavedSessionsPanel(
                 project, settings, engine, this::loadSession, () -> currentUnits, this);
@@ -180,68 +164,54 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
     private void mirrorSharedSession() {
         SessionData session = engine.getSession();
         if (session == null) {
-            seenSessionId = null;
+            if (seen.forget()) {
+                // The walk left the clock (New in any window, a deletion, another
+                // IDE): the next Start must not inherit its name and timestamp.
+                showDefaultName(selectedMode());
+            }
             return;
         }
-        if (!session.id.equals(seenSessionId)) {
+        if (!seen.isShowing(session)) {
             populateFields(session);
+            return;
+        }
+        Set<SeenSession.Field> changed = seen.update(session);
+        if (changed.isEmpty()) {
             return;
         }
         populatingFields = true;
         try {
-            if (session.speedKmh != seenSpeedKmh) {
-                seenSpeedKmh = session.speedKmh;
+            if (changed.contains(SeenSession.Field.SPEED)) {
+                // Read before display(): it resets the exact value the read compares against.
                 double fieldSpeed = parseSpeedKmh();
                 String display = speedInput.display(session.speedKmh, currentUnits);
                 if (Math.abs(fieldSpeed - session.speedKmh) > 0.001) {
                     speedField.setText(display);
                 }
             }
-            if (session.inclinePercent != seenInclinePercent) {
-                seenInclinePercent = session.inclinePercent;
-                if (Math.abs(Math.max(0.0, parseInclineOrDefault()) - session.inclinePercent) > 0.001) {
-                    inclineField.setText(session.inclinePercent > 0 ? format(session.inclinePercent) : "0");
-                }
+            if (changed.contains(SeenSession.Field.INCLINE)
+                    && Math.abs(Math.max(0.0, parseInclineOrDefault()) - session.inclinePercent) > 0.001) {
+                inclineField.setText(session.inclinePercent > 0 ? format(session.inclinePercent) : "0");
             }
-            if (!session.algorithmId.equals(seenAlgorithmId)) {
-                seenAlgorithmId = session.algorithmId;
+            if (changed.contains(SeenSession.Field.ALGORITHM)) {
                 algorithmCombo.setSelectedItem(CalorieAlgorithm.fromId(session.algorithmId));
             }
-            if (!session.name.equals(seenName)) {
-                seenName = session.name;
-                if (!sessionNameField.getText().trim().equals(session.name)) {
-                    sessionNameField.setText(session.name);
-                }
+            if (changed.contains(SeenSession.Field.NAME) && !sessionNameField.getText().trim().equals(session.name)) {
+                sessionNameField.setText(session.name);
             }
-            if (session.targetCalories != seenTargetCalories) {
-                seenTargetCalories = session.targetCalories;
+            if (changed.contains(SeenSession.Field.CALORIE_TARGET)) {
                 calorieTargetField.setText(format(session.targetCalories));
             }
-            if (session.targetFatKg != seenTargetFatKg) {
-                seenTargetFatKg = session.targetFatKg;
+            if (changed.contains(SeenSession.Field.FAT_TARGET)) {
                 fatTargetField.setText(fatInput.display(session.targetFatKg, currentUnits));
             }
-            if (session.intervalWalkSeconds != seenWalkSeconds || session.intervalBreakSeconds != seenBreakSeconds) {
-                seenWalkSeconds = session.intervalWalkSeconds;
-                seenBreakSeconds = session.intervalBreakSeconds;
-                walkMinutesField.setText(String.valueOf(seenWalkSeconds / 60));
-                breakMinutesField.setText(String.valueOf(seenBreakSeconds / 60));
+            if (changed.contains(SeenSession.Field.INTERVALS)) {
+                walkMinutesField.setText(String.valueOf(session.intervalWalkSeconds / 60));
+                breakMinutesField.setText(String.valueOf(session.intervalBreakSeconds / 60));
             }
         } finally {
             populatingFields = false;
         }
-    }
-
-    private void rememberSeen(SessionData session) {
-        seenSessionId = session.id;
-        seenSpeedKmh = session.speedKmh;
-        seenInclinePercent = session.inclinePercent;
-        seenAlgorithmId = session.algorithmId;
-        seenName = session.name;
-        seenTargetCalories = session.targetCalories;
-        seenTargetFatKg = session.targetFatKg;
-        seenWalkSeconds = session.intervalWalkSeconds;
-        seenBreakSeconds = session.intervalBreakSeconds;
     }
 
     @Override
@@ -293,69 +263,13 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
     private JComponent createSpeedRow() {
         JButton presetsButton = new JButton(TreadmillBundle.message("button.presets"));
         presetsButton.setToolTipText(TreadmillBundle.message("button.presets.tooltip"));
-        presetsButton.addActionListener(event -> showPresetsPopup(presetsButton));
+        presetsButton.addActionListener(event -> new SpeedPresetsPopup(project, settings, () -> currentUnits,
+                this::parseSpeedKmh, speed -> speedField.setText(speedInput.display(speed, currentUnits)),
+                () -> inputError(WorkoutInputs.Field.SPEED)).showUnderneathOf(presetsButton));
         JPanel row = new JPanel(new BorderLayout(6, 0));
         row.add(speedField, BorderLayout.CENTER);
         row.add(presetsButton, BorderLayout.EAST);
         return row;
-    }
-
-    private void showPresetsPopup(JComponent anchor) {
-        DefaultActionGroup group = new DefaultActionGroup();
-        List<SpeedPreset> presets = settings.getSpeedPresets();
-        for (SpeedPreset preset : presets) {
-            String label = TreadmillBundle.message("presets.item", preset.name,
-                    format(currentUnits.speedFromKmh(preset.speedKmh)), currentUnits.speedUnit());
-            group.add(new DumbAwareAction(label) {
-                @Override
-                public void actionPerformed(@NotNull AnActionEvent event) {
-                    speedField.setText(speedInput.display(preset.speedKmh, currentUnits));
-                }
-            });
-        }
-        if (!presets.isEmpty()) {
-            group.addSeparator();
-        }
-        group.add(new DumbAwareAction(TreadmillBundle.message("presets.saveCurrent")) {
-            @Override
-            public void actionPerformed(@NotNull AnActionEvent event) {
-                saveSpeedPreset();
-            }
-        });
-        if (!presets.isEmpty()) {
-            DefaultActionGroup removeGroup = DefaultActionGroup.createPopupGroup(
-                    () -> TreadmillBundle.message("presets.removeGroup"));
-            for (SpeedPreset preset : presets) {
-                removeGroup.add(new DumbAwareAction(preset.name) {
-                    @Override
-                    public void actionPerformed(@NotNull AnActionEvent event) {
-                        settings.removeSpeedPreset(preset.name);
-                    }
-                });
-            }
-            group.add(removeGroup);
-        }
-        JBPopupFactory.getInstance()
-                .createActionGroupPopup(TreadmillBundle.message("presets.popup.title"), group,
-                        DataManager.getInstance().getDataContext(anchor),
-                        JBPopupFactory.ActionSelectionAid.SPEEDSEARCH, true)
-                .showUnderneathOf(anchor);
-    }
-
-    private void saveSpeedPreset() {
-        double speedKmh = parseSpeedKmh();
-        if (speedKmh <= 0 || speedKmh > 25) {
-            showError(speedRangeMessage());
-            return;
-        }
-        String defaultName = format(currentUnits.speedFromKmh(speedKmh)) + " " + currentUnits.speedUnit();
-        String name = Messages.showInputDialog(project,
-                TreadmillBundle.message("presets.dialog.message"),
-                TreadmillBundle.message("presets.dialog.title"), null, defaultName, null);
-        if (name == null || name.isBlank()) {
-            return;
-        }
-        settings.addSpeedPreset(new SpeedPreset(name.trim(), speedKmh));
     }
 
     private JComponent createMetrics() {
@@ -415,10 +329,10 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         }
         SessionMode mode = selectedMode();
         targetCards.show(targetPanel, mode.name());
-        // Clear first: the default name below is pushed to the engine as it
-        // is typed, and would otherwise rename the session being dropped.
+        // Clear first: a name typed into the field is pushed to the engine,
+        // and would otherwise rename the session being dropped.
         engine.clearSession();
-        sessionNameField.setText(defaultSessionName(mode));
+        showDefaultName(mode);
         updateDisplay();
     }
 
@@ -465,6 +379,11 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
     }
 
     private String inputError(WorkoutInputs.Field field) {
+        JBTextField source = textFieldFor(field);
+        String ambiguity = source == null ? null : NumericInput.ambiguityMessage(source.getText());
+        if (ambiguity != null) {
+            return ambiguity;
+        }
         return switch (field) {
             case SPEED -> speedRangeMessage();
             case INCLINE -> TreadmillBundle.message("error.incline");
@@ -476,6 +395,19 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         };
     }
 
+    /** The text field a validation failure comes from, or null for a computed value such as the burn rate. */
+    private @Nullable JBTextField textFieldFor(WorkoutInputs.Field field) {
+        return switch (field) {
+            case SPEED -> speedField;
+            case INCLINE -> inclineField;
+            case CALORIES -> calorieTargetField;
+            case FAT -> fatTargetField;
+            case WALK -> walkMinutesField;
+            case BREAK -> breakMinutesField;
+            case BURN_RATE, TARGET_LIMIT -> null;
+        };
+    }
+
     private SessionData buildSessionFromInputs() {
         WorkoutInputs inputs = validatedInputs();
         if (inputs == null) {
@@ -484,8 +416,10 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         SessionData session = inputs.createSession(settings.getProfile());
         session.createdMillis = System.currentTimeMillis();
         session.id = String.valueOf(session.createdMillis);
-        session.name = sessionNameField.getText().trim().isBlank()
-                ? defaultSessionName(inputs.mode()) : sessionNameField.getText().trim();
+        // A generated name carries the time it was generated; renew it so a
+        // walk started an hour after opening the form isn't named for then.
+        String typed = sessionNameField.getText().trim();
+        session.name = typed.isBlank() || typed.equals(generatedName) ? defaultSessionName(inputs.mode()) : typed;
         return session;
     }
 
@@ -510,9 +444,9 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         floatingClock.setDisplay(clockPrefix, displayTime.getTimeText());
 
         if (session == null) {
-            distanceLabel.setText(distanceText(0.0));
-            stepsLabel.setText(stepsText(0L));
-            caloriesLabel.setText(kcalText(0.0));
+            distanceLabel.setText(WorkoutText.distance(0.0, currentUnits));
+            stepsLabel.setText(WorkoutText.steps(0L));
+            caloriesLabel.setText(WorkoutText.kcal(0.0));
             targetLabel.setText(previewTargetText());
             statsPanel.setStatus(TreadmillBundle.message("status.ready"));
             startPauseButton.setText(TreadmillBundle.message("button.start"));
@@ -521,21 +455,21 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         }
 
         SessionMode mode = SessionMode.fromId(session.modeId);
-        distanceLabel.setText(distanceText(session.distanceKm));
-        stepsLabel.setText(stepsText(session.steps));
-        caloriesLabel.setText(kcalText(session.calories));
+        distanceLabel.setText(WorkoutText.distance(session.distanceKm, currentUnits));
+        stepsLabel.setText(WorkoutText.steps(session.steps));
+        caloriesLabel.setText(WorkoutText.kcal(session.calories));
         if (mode == SessionMode.MARATHON) {
             targetLabel.setText(TreadmillBundle.message("panel.target.open"));
         } else if (mode == SessionMode.CALORIE_BURN) {
-            targetLabel.setText(kcalText(session.targetCalories));
+            targetLabel.setText(WorkoutText.kcal(session.targetCalories));
         } else if (mode == SessionMode.INTERVAL) {
             targetLabel.setText(WorkoutMath.hasIntervalBlocks(session)
-                    ? intervalBlocksText(session.intervalWalkSeconds / 60, session.intervalBreakSeconds / 60)
+                    ? WorkoutText.intervalBlocks(session.intervalWalkSeconds / 60, session.intervalBreakSeconds / 60)
                     : TreadmillBundle.message("panel.target.open"));
         } else {
-            targetLabel.setText(weightText(currentUnits.weightFromKg(session.targetFatKg)));
+            targetLabel.setText(WorkoutText.weight(session.targetFatKg, currentUnits));
         }
-        distanceLabel.setToolTipText(segmentsTooltip(session));
+        distanceLabel.setToolTipText(WorkoutText.segmentsTooltip(session, currentUnits));
         String status = engine.isRunning()
                 ? TreadmillBundle.message("status.running")
                 : session.completed ? TreadmillBundle.message("status.complete") : TreadmillBundle.message("status.paused");
@@ -611,8 +545,7 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
 
     private void newSession() {
         engine.clearSession();
-        SessionMode mode = selectedMode();
-        sessionNameField.setText(defaultSessionName(mode));
+        showDefaultName(selectedMode());
         updateDisplay();
     }
 
@@ -666,27 +599,6 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         return String.format("%.1f", currentUnits.speedFromKmh(25.0));
     }
 
-    private String distanceText(double km) {
-        return TreadmillBundle.message("panel.value.distance",
-                String.format("%.2f", currentUnits.distanceFromKm(km)), currentUnits.distanceUnit());
-    }
-
-    private static String stepsText(long steps) {
-        return TreadmillBundle.message("panel.value.steps", steps);
-    }
-
-    private static String kcalText(double kcal) {
-        return TreadmillBundle.message("panel.value.kcal", String.format("%.0f", kcal));
-    }
-
-    private static String intervalBlocksText(long walkMinutes, long breakMinutes) {
-        return TreadmillBundle.message("panel.value.intervalBlocks", walkMinutes, breakMinutes);
-    }
-
-    private String weightText(double displayWeight) {
-        return TreadmillBundle.message("panel.value.weight", String.format("%.2f", displayWeight), currentUnits.weightUnit());
-    }
-
     private void loadLastSessionOrDefault() {
         SessionData last = settings.findSession(settings.getLastSessionId());
         if (last != null) {
@@ -717,7 +629,7 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
                 walkMinutesField.setText(String.valueOf(session.intervalWalkSeconds / 60));
                 breakMinutesField.setText(String.valueOf(session.intervalBreakSeconds / 60));
             }
-            rememberSeen(session);
+            seen.remember(session);
         } finally {
             populatingFields = false;
         }
@@ -842,7 +754,7 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         if (populatingFields) {
             return;
         }
-        applySpeedFromField(false);
+        applySpeedFromField();
         if (engine.getSession() == null) {
             updateDisplay();
         }
@@ -858,12 +770,10 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         }
     }
 
-    private void applySpeedFromField(boolean showError) {
+    /** Pushes each valid keystroke to the engine; the inline validator reports invalid ones. */
+    private void applySpeedFromField() {
         double speed = parseSpeedKmh();
         if (speed <= 0 || speed > 25) {
-            if (showError) {
-                showError(speedRangeMessage());
-            }
             return;
         }
         maybeShowHighSpeedPrompt(speed);
@@ -896,25 +806,6 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         }
     }
 
-    /** Multi-speed sessions get a per-speed breakdown tooltip on the distance tile. */
-    private String segmentsTooltip(SessionData session) {
-        if (session.segments.size() < 2) {
-            return null;
-        }
-        StringBuilder text = new StringBuilder("<html><b>")
-                .append(StringUtil.escapeXmlEntities(TreadmillBundle.message("tooltip.segments.title")))
-                .append("</b><br>");
-        for (SpeedSegment segment : session.segments) {
-            String duration = segment.seconds < 60
-                    ? TreadmillBundle.message("tooltip.segments.underMinute")
-                    : TreadmillBundle.message("tooltip.segments.minutes", segment.seconds / 60);
-            text.append(StringUtil.escapeXmlEntities(TreadmillBundle.message("tooltip.segments.row",
-                    duration, format(currentUnits.speedFromKmh(segment.speedKmh)), currentUnits.speedUnit())));
-            text.append("<br>");
-        }
-        return text.append("</html>").toString();
-    }
-
     private long previewSecondsFromInputs() {
         WorkoutInputs inputs = readInputs();
         return inputs.invalidField(settings.getProfile()) == null
@@ -930,15 +821,27 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
             return TreadmillBundle.message("panel.value.none");
         }
         return switch (inputs.mode()) {
-            case CALORIE_BURN -> kcalText(inputs.calorieTarget());
-            case INTERVAL -> intervalBlocksText((long) inputs.walkMinutes(), (long) inputs.breakMinutes());
-            case FAT_BURN -> weightText(currentUnits.weightFromKg(inputs.targetFatKg()));
+            case CALORIE_BURN -> WorkoutText.kcal(inputs.calorieTarget());
+            case INTERVAL -> WorkoutText.intervalBlocks((long) inputs.walkMinutes(), (long) inputs.breakMinutes());
+            case FAT_BURN -> WorkoutText.weight(inputs.targetFatKg(), currentUnits);
             case MARATHON -> TreadmillBundle.message("panel.target.open");
         };
     }
 
     private static String defaultSessionName(SessionMode mode) {
         return mode.getLabel() + " " + LocalDateTime.now().format(SESSION_NAME_FORMAT);
+    }
+
+    /** Puts a generated name in the field, remembered so Start can tell it from a typed one. */
+    private void showDefaultName(SessionMode mode) {
+        generatedName = defaultSessionName(mode);
+        boolean wasPopulating = populatingFields;
+        populatingFields = true;
+        try {
+            sessionNameField.setText(generatedName);
+        } finally {
+            populatingFields = wasPopulating;
+        }
     }
 
     /** The field's number, or -1 when it is not a usable one: "NaN" parses but passes every range check. */

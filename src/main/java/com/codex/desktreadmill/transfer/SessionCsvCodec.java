@@ -1,4 +1,4 @@
-package com.codex.desktreadmill.ui;
+package com.codex.desktreadmill.transfer;
 
 import com.codex.desktreadmill.calories.CalorieAlgorithm;
 import com.codex.desktreadmill.model.SessionData;
@@ -11,25 +11,46 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /** CSV conversion without file dialogs, notifications, or storage writes. */
-final class SessionCsvCodec {
+public final class SessionCsvCodec {
     private static final DateTimeFormatter CSV_DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+    /**
+     * The English labels exports carried before they switched to ids. Fixed
+     * here, as data: matching against the live, translatable labels would
+     * break old files the moment a label changed.
+     */
+    private static final Map<String, SessionMode> LEGACY_MODE_LABELS = Map.of(
+            "marathon", SessionMode.MARATHON,
+            "calorie burn", SessionMode.CALORIE_BURN,
+            "kg burn", SessionMode.FAT_BURN,
+            "interval walk", SessionMode.INTERVAL);
+    private static final Map<String, CalorieAlgorithm> LEGACY_ALGORITHM_LABELS = Map.of(
+            "acsm treadmill", CalorieAlgorithm.ACSM_FLAT,
+            "acsm treadmill (default)", CalorieAlgorithm.ACSM_FLAT,
+            "compendium met gross", CalorieAlgorithm.COMPENDIUM_MET_GROSS,
+            "compendium met active", CalorieAlgorithm.COMPENDIUM_MET_ACTIVE,
+            "distance cost per km", CalorieAlgorithm.DISTANCE_COST);
 
     private SessionCsvCodec() {
     }
 
-    /** Package-visible for round-trip tests. Always metric columns, locale-independent. */
-    static String buildCsv(List<SessionData> sessions) {
+    /** Always metric columns and stable ids, locale-independent. */
+    public static String buildCsv(List<SessionData> sessions) {
         StringBuilder csv = new StringBuilder(
                 "name,mode,algorithm,created,speed_kmh,incline_percent,elapsed_seconds,distance_km,steps,calories,"
                         + "target_calories,target_fat_kg,completed,interval_walk_seconds,interval_break_seconds,"
                         + "interval_walking,interval_phase_seconds,remaining_seconds,target_seconds,id,"
                         + "timer_remainder_millis,activity_days,step_remainder\n");
         for (SessionData session : sessions) {
+            // Mode and algorithm are written as their stable ids, not the
+            // display labels: a relabelled or translated UI must not change
+            // what an export says. Imports still read the old English labels.
             csv.append(csvField(session.name)).append(',')
-                    .append(SessionMode.fromId(session.modeId).getLabel()).append(',')
-                    .append(CalorieAlgorithm.fromId(session.algorithmId).getLabel()).append(',')
+                    .append(SessionMode.fromId(session.modeId).name()).append(',')
+                    .append(CalorieAlgorithm.fromId(session.algorithmId).name()).append(',')
                     .append(session.createdMillis > 0
                             ? LocalDateTime.ofInstant(Instant.ofEpochMilli(session.createdMillis), ZoneId.systemDefault())
                             .format(CSV_DATE_FORMAT)
@@ -73,7 +94,7 @@ final class SessionCsvCodec {
     /**
      * One CSV row as a session, or null when the row is unusable. The id stays
      * blank for rows from exports that predate the id column; the import
-     * assigns one once the row is accepted, see {@link SessionTransfer#selectNewSessions}.
+     * assigns one once the row is accepted, see {@link SessionImport#selectNewSessions}.
      */
     static @Nullable SessionData parseCsvSession(List<String> header, List<String> fields) {
         SessionData session = new SessionData();
@@ -129,24 +150,24 @@ final class SessionCsvCodec {
 
     private static SessionMode modeFromLabel(String label) {
         for (SessionMode mode : SessionMode.values()) {
-            if (mode.getLabel().equalsIgnoreCase(label) || mode.name().equalsIgnoreCase(label)) {
+            if (mode.name().equalsIgnoreCase(label)) {
                 return mode;
             }
         }
-        return SessionMode.MARATHON;
+        return LEGACY_MODE_LABELS.getOrDefault(label.toLowerCase(Locale.ROOT), SessionMode.MARATHON);
     }
 
     private static CalorieAlgorithm algorithmFromLabel(String label) {
         for (CalorieAlgorithm algorithm : CalorieAlgorithm.values()) {
-            if (algorithm.getLabel().equalsIgnoreCase(label) || algorithm.name().equalsIgnoreCase(label)) {
+            if (algorithm.name().equalsIgnoreCase(label)) {
                 return algorithm;
             }
         }
-        return CalorieAlgorithm.ACSM_FLAT;
+        return LEGACY_ALGORITHM_LABELS.getOrDefault(label.toLowerCase(Locale.ROOT), CalorieAlgorithm.ACSM_FLAT);
     }
 
     /** Parses complete records before accepting any sessions, including quoted line breaks. */
-    static List<SessionData> parseCsv(String csv) {
+    public static List<SessionData> parseCsv(String csv) {
         List<List<String>> records = parseCsvRecords(stripBom(csv));
         List<SessionData> sessions = new ArrayList<>();
         if (records.isEmpty()) {

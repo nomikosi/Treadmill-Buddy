@@ -3,7 +3,6 @@ package com.codex.desktreadmill.engine;
 import com.codex.desktreadmill.calories.CalorieAlgorithm;
 import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.SessionMode;
-import com.codex.desktreadmill.model.UnitSystem;
 import com.codex.desktreadmill.model.UserProfile;
 import com.codex.desktreadmill.settings.TreadmillSettings;
 import org.junit.jupiter.api.AfterEach;
@@ -49,7 +48,7 @@ class WorkoutEngineTest {
         // A realistic instant, and midday so "yesterday" stays a distinct
         // calendar day in every time zone the tests might run in.
         nowMillis = LocalDate.of(2026, 8, 10).atTime(12, 0).toInstant(ZoneOffset.UTC).toEpochMilli();
-        engine = new WorkoutEngine(settings, () -> nowMillis, false);
+        engine = new WorkoutEngine(settings, () -> nowMillis, WorkoutFeedback.SILENT);
     }
 
     @AfterEach
@@ -363,23 +362,23 @@ class WorkoutEngineTest {
         SessionData yesterday = record("yesterday", 600L, 1.0, 99_999L, today.minusDays(1));
         SessionData current = record("current", 600L, 5.0, 10L, today);
 
-        WorkoutEngine.BrokenRecords broken =
+        RecordTracker.BrokenRecords broken =
                 decide(List.of(yesterday, current), current, today, "", 0L, 0L);
         assertTrue(broken.dayDistance, "5 km beats yesterday's 1 km");
         assertFalse(broken.daySteps, "10 steps does not beat yesterday's 99,999");
 
         // And the mirror image: the steps guard alone must block steps.
-        WorkoutEngine.BrokenRecords stepsBlocked =
+        RecordTracker.BrokenRecords stepsBlocked =
                 decide(List.of(yesterday, current), current, today, "", 0L, today.toEpochDay());
         assertTrue(stepsBlocked.dayDistance, "the steps guard must not suppress the distance record");
     }
 
     /** The record decision is pure, so the once-only rules can be checked directly. */
-    private static WorkoutEngine.BrokenRecords decide(
+    private static RecordTracker.BrokenRecords decide(
             List<SessionData> history, SessionData current, LocalDate today,
             String lastSessionId, long lastDistanceDay, long lastStepsDay
     ) {
-        return WorkoutEngine.brokenRecords(history, current, today, ZoneOffset.UTC,
+        return RecordTracker.brokenRecords(history, current, today, ZoneOffset.UTC,
                 lastSessionId, lastDistanceDay, lastStepsDay);
     }
 
@@ -397,7 +396,7 @@ class WorkoutEngineTest {
     void aSoloSessionNeverBreaksARecordAgainstItself() {
         LocalDate today = LocalDate.of(2026, 8, 10);
         SessionData only = record("only", 3_600L, 5.0, 7_000L, today);
-        WorkoutEngine.BrokenRecords broken = decide(List.of(only), only, today, "", 0L, 0L);
+        RecordTracker.BrokenRecords broken = decide(List.of(only), only, today, "", 0L, 0L);
         // The baseline must be 0, not the session's own 3600 - that is the
         // difference between excluding the current session and not.
         assertEquals(0L, broken.previousLongestSeconds, "the session must not be its own baseline");
@@ -429,17 +428,10 @@ class WorkoutEngineTest {
         // First session of the day beats yesterday: announce.
         assertTrue(decide(List.of(yesterday, first), first, today, "", 0L, 0L).dayDistance);
         // Second session pushes the day total higher, but the day already fired.
-        WorkoutEngine.BrokenRecords broken =
+        RecordTracker.BrokenRecords broken =
                 decide(List.of(yesterday, first, second), second, today, "", epochDay, epochDay);
         assertFalse(broken.dayDistance);
         assertFalse(broken.daySteps);
-    }
-
-    @Test
-    void durationFormatDropsTheZeroHourForShortSessions() {
-        assertEquals("45s", WorkoutEngine.formatDuration(45));
-        assertEquals("25m", WorkoutEngine.formatDuration(25 * 60));
-        assertEquals("1h 05m", WorkoutEngine.formatDuration(3600 + 5 * 60));
     }
 
     @Test
@@ -577,32 +569,73 @@ class WorkoutEngineTest {
     }
 
     @Test
-    void onlyRealTypingCountsAsTyping() {
-        JPanel source = new JPanel();
-        assertTrue(WorkoutEngine.isTypingKey(
-                new KeyEvent(source, KeyEvent.KEY_PRESSED, 0L, 0, KeyEvent.VK_A, 'a')));
-        assertFalse(WorkoutEngine.isTypingKey(
-                new KeyEvent(source, KeyEvent.KEY_PRESSED, 0L, 0, KeyEvent.VK_SHIFT, KeyEvent.CHAR_UNDEFINED)),
-                "a lone Shift is not typing");
-        assertFalse(WorkoutEngine.isTypingKey(
-                new KeyEvent(source, KeyEvent.KEY_PRESSED, 0L, 0, KeyEvent.VK_CONTROL, KeyEvent.CHAR_UNDEFINED)));
-        assertFalse(WorkoutEngine.isTypingKey(
-                new KeyEvent(source, KeyEvent.KEY_PRESSED, 0L, 0, KeyEvent.VK_F5, KeyEvent.CHAR_UNDEFINED)),
-                "action keys never counted");
-        assertFalse(WorkoutEngine.isTypingKey(
-                new KeyEvent(source, KeyEvent.KEY_RELEASED, 0L, 0, KeyEvent.VK_A, 'a')));
+    void undoingAResetAfterRestartingTheClockKeepsThePreResetWalk() {
+        engine.startSession(marathonSession());
+        for (int i = 0; i < 20; i++) {
+            nowMillis += 30_000;
+            engine.tick();
+        }
+        engine.pause();
+        SessionData before = engine.getSession().copy();
+        assertEquals(600L, before.elapsedSeconds);
+
+        engine.reset();
+        engine.resume(); // Start again inside the undo window...
+        nowMillis += 3_000;
+        engine.tick();
+        engine.restoreSession(before); // ...then click Undo.
+
+        assertFalse(engine.isRunning(), "the restarted clock would overwrite the restored walk");
+        assertEquals(600L, engine.getSession().elapsedSeconds);
+        nowMillis += 3_000;
+        engine.tick();
+        engine.dispose();
+        assertEquals(600L, settings.findSession("test").elapsedSeconds);
     }
 
     @Test
-    void completionMessageUsesDisplayUnitsAndEscapesTheName() {
-        SessionData session = marathonSession();
-        session.name = "Walk <b>bold</b>";
-        session.distanceKm = 2.25;
-        session.calories = 150.4;
-        String imperial = WorkoutEngine.completionMessage(session, UnitSystem.IMPERIAL);
-        assertTrue(imperial.contains(" mi,"), "imperial users must not be told km: " + imperial);
-        assertFalse(imperial.contains("km"));
-        assertTrue(imperial.contains("&lt;b&gt;"), "balloon content is HTML, names must be escaped: " + imperial);
-        assertTrue(WorkoutEngine.completionMessage(session, UnitSystem.METRIC).contains(" km,"));
+    void undoingAResetRestoresTheLongestSessionAnnouncementGuard() {
+        engine.startSession(marathonSession());
+        nowMillis += 10_000;
+        engine.tick();
+        engine.pause();
+        settings.setLastSessionRecordId("test");
+        SessionData before = engine.getSession().copy();
+
+        engine.reset();
+        assertEquals("", settings.getLastSessionRecordId(), "a reset walk may earn the record again");
+        engine.restoreSession(before);
+        assertEquals("test", settings.getLastSessionRecordId(), "the restored walk already had its balloon");
+    }
+
+    @Test
+    void clearingTheClockForgetsWhichSessionToReopen() {
+        engine.startSession(marathonSession());
+        nowMillis += 10_000;
+        engine.tick();
+        engine.pause();
+        assertEquals("test", settings.getLastSessionId());
+
+        engine.clearSession();
+        assertEquals("", settings.getLastSessionId(),
+                "a tool window opened after New would otherwise load the walk straight back");
+        assertNotNull(settings.findSession("test"), "the walk itself stays in the history");
+    }
+
+    @Test
+    void onlyRealTypingCountsAsTyping() {
+        JPanel source = new JPanel();
+        assertTrue(WorkoutDriver.isTypingKey(
+                new KeyEvent(source, KeyEvent.KEY_PRESSED, 0L, 0, KeyEvent.VK_A, 'a')));
+        assertFalse(WorkoutDriver.isTypingKey(
+                new KeyEvent(source, KeyEvent.KEY_PRESSED, 0L, 0, KeyEvent.VK_SHIFT, KeyEvent.CHAR_UNDEFINED)),
+                "a lone Shift is not typing");
+        assertFalse(WorkoutDriver.isTypingKey(
+                new KeyEvent(source, KeyEvent.KEY_PRESSED, 0L, 0, KeyEvent.VK_CONTROL, KeyEvent.CHAR_UNDEFINED)));
+        assertFalse(WorkoutDriver.isTypingKey(
+                new KeyEvent(source, KeyEvent.KEY_PRESSED, 0L, 0, KeyEvent.VK_F5, KeyEvent.CHAR_UNDEFINED)),
+                "action keys never counted");
+        assertFalse(WorkoutDriver.isTypingKey(
+                new KeyEvent(source, KeyEvent.KEY_RELEASED, 0L, 0, KeyEvent.VK_A, 'a')));
     }
 }

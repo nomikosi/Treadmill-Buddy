@@ -5,6 +5,10 @@ on:
     branches: [ master ]
   pull_request:
 
+# Checkout and artifact upload need nothing more; keep the token read-only.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest

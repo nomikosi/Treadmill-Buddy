@@ -29,7 +29,7 @@ class WorkoutConfigurationTest {
     void setUp() {
         settings = new TreadmillSettings(directory.resolve("sessions.json"));
         settings.setAutoPauseMinutes(0);
-        engine = new WorkoutEngine(settings, () -> now, false);
+        engine = new WorkoutEngine(settings, () -> now, WorkoutFeedback.SILENT);
     }
 
     @AfterEach

@@ -1,5 +1,6 @@
 package com.codex.desktreadmill.ui;
 
+import com.codex.desktreadmill.TreadmillBundle;
 import com.codex.desktreadmill.calories.CalorieAlgorithm;
 import com.codex.desktreadmill.model.SessionMode;
 import com.intellij.openapi.ui.ComboBox;
@@ -28,7 +29,9 @@ public final class ComboHelp {
             ) {
                 Component component = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
                 if (value instanceof CalorieAlgorithm algorithm) {
-                    setText(algorithm.getLabel() + (algorithm == defaultAlgorithm.get() ? " (default)" : ""));
+                    setText(algorithm == defaultAlgorithm.get()
+                            ? TreadmillBundle.message("algorithm.defaultLabel", algorithm.getLabel())
+                            : algorithm.getLabel());
                     setToolTipText(algorithm.getDescription());
                     list.setToolTipText(algorithm.getDescription());
                 }

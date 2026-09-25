@@ -1,4 +1,4 @@
-package com.codex.desktreadmill.ui;
+package com.codex.desktreadmill.transfer;
 
 import com.codex.desktreadmill.model.DailyActivity;
 import com.codex.desktreadmill.model.SessionData;
@@ -11,7 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /** Shared JSON serializers for full backups and the CSV activity column. */
-final class SessionJsonCodec {
+public final class SessionJsonCodec {
     private static final Gson GSON = new Gson();
     private static final Gson PRETTY_GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Type SESSIONS = new TypeToken<List<SessionData>>() { }.getType();
@@ -20,11 +20,11 @@ final class SessionJsonCodec {
     private SessionJsonCodec() {
     }
 
-    static String buildJson(List<SessionData> sessions) {
+    public static String buildJson(List<SessionData> sessions) {
         return PRETTY_GSON.toJson(sessions);
     }
 
-    static List<SessionData> parseJson(String json) {
+    public static List<SessionData> parseJson(String json) {
         List<SessionData> parsed = GSON.fromJson(json, SESSIONS);
         List<SessionData> sessions = new ArrayList<>();
         if (parsed != null) {

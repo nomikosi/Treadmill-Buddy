@@ -1,4 +1,4 @@
-package com.codex.desktreadmill.settings;
+package com.codex.desktreadmill.storage;
 
 import com.codex.desktreadmill.model.SessionData;
 import com.google.gson.Gson;

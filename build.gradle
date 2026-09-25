@@ -1,10 +1,12 @@
+import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
+
 plugins {
     id 'java'
-    id 'org.jetbrains.intellij.platform' version '2.18.1'
+    id 'org.jetbrains.intellij.platform' version '2.19.0'
 }
 
 group = 'com.codex'
-version = '1.1.1'
+version = '1.2.0'
 
 repositories {
     mavenCentral()
@@ -39,7 +41,9 @@ test {
 }
 
 intellijPlatform {
-    buildSearchableOptions = false
+    // Indexes the settings page's labels, so Settings search finds
+    // "auto-pause" or "weight" and not just the page title.
+    buildSearchableOptions = true
     pluginConfiguration {
         id = 'com.codex.desktreadmill'
         name = 'Treadmill Buddy'
@@ -58,7 +62,14 @@ intellijPlatform {
     }
     pluginVerification {
         ides {
+            // recommended() follows the build target, IntelliJ IDEA Community,
+            // which is not published after 2025.2. The unified IntelliJ IDEA
+            // covers 2025.3 and later.
             recommended()
+            select {
+                it.types = [IntelliJPlatformType.IntellijIdea]
+                it.sinceBuild = '253'
+            }
         }
     }
     signing {

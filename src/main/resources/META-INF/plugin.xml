@@ -36,7 +36,7 @@ limitations under the License.
 
     <change-notes><![CDATA[
         <ul>
-            <li>Unreleased:
+            <li>1.2.0:
                 <ul>
                     <li>Paused Save and Resume keep newer progress saved by another IDE and merge only fields edited locally, including speed, name, and targets. Completed or deleted sessions are not restarted by stale forms.</li>
                     <li>History writes always require the cross-process lock and merge the latest file. Pending saves and deletions retry in the background when the lock or file is unavailable.</li>
@@ -48,6 +48,13 @@ limitations under the License.
                     <li>Profile measurements, speed, and goals preserve their exact metric values across unit changes. Editable numbers work across locales, and small positive goals use enough decimal places to stay valid.</li>
                     <li>CSV import supports quoted names containing commas, quotes, and line breaks, and rejects malformed quoting before saving any rows. TCX exports with incomplete speed histories distribute distance across the full workout.</li>
                     <li>History cleanup uses the most recent recorded activity and protects the session currently on the clock, including while paused.</li>
+                    <li>New leaves the clock empty: opening the tool window afterwards, in any project or after a restart, no longer loads the previous walk back, and the form offers a fresh name instead of the old one.</li>
+                    <li>Undo after Reset restores the walk even when the clock was started again in the meantime.</li>
+                    <li>The settings page is under Settings | Tools | Treadmill Buddy, as documented, instead of Other Settings, and Settings search finds its individual options.</li>
+                    <li>Number fields read thousands separators where they cannot be misread, so a 10,000-step goal is no longer saved as 10 steps. An ambiguous decimal such as 1,500 is flagged with both readings.</li>
+                    <li>Another IDE briefly holding the history lock no longer triggers the disk-failure warning: saves retry quietly, closing the IDE waits a moment for the lock, and a separate warning appears only when the lock stays busy.</li>
+                    <li>The 30-second autosave writes the history file on a background thread instead of the UI thread.</li>
+                    <li>CSV exports write modes and algorithms as stable ids; exports with the older English labels still import.</li>
                 </ul>
             </li>
             <li>1.1.1:
@@ -148,9 +155,13 @@ limitations under the License.
                 anchor="right"
                 icon="/icons/treadmill.svg"
                 factoryClass="com.codex.desktreadmill.TreadmillToolWindowFactory"/>
+        <!-- Without parentId the platform files the page under Other Settings. -->
         <applicationConfigurable
+                parentId="tools"
+                id="com.codex.desktreadmill.settings"
                 instance="com.codex.desktreadmill.settings.TreadmillConfigurable"
-                displayName="Treadmill Buddy"/>
+                bundle="messages.TreadmillBundle"
+                key="settings.displayName"/>
         <postStartupActivity implementation="com.codex.desktreadmill.startup.TreadmillStartupActivity"/>
         <statusBarWidgetFactory
                 id="TreadmillBuddyWidget"

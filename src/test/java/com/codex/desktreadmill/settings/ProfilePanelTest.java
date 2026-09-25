@@ -162,6 +162,40 @@ class ProfilePanelTest {
         });
     }
 
+    @Test
+    void aThousandsSeparatedStepsGoalMeansTenThousandSteps() throws Exception {
+        onEdt(() -> {
+            TreadmillSettings settings = settings(UnitSystem.METRIC);
+            ProfilePanel panel = panel(settings);
+            ((ComboBox<?>) field(panel, "goalTypeCombo")).setSelectedItem(GoalType.STEPS);
+            ((ComboBox<?>) field(panel, "weeklyGoalTypeCombo")).setSelectedItem(GoalType.STEPS);
+            text(panel, "goalValueField").setText("10,000");
+            text(panel, "weeklyGoalValueField").setText("70.000");
+            assertNull(panel.validateInput());
+            assertEquals(10_000, panel.getDailyGoalValueMetric(), 0, "used to be saved as a 10-step goal");
+            assertEquals(70_000, panel.getWeeklyGoalValueMetric(), 0);
+            text(panel, "goalValueField").setText("7.5");
+            assertNotNull(panel.validateInput(), "steps are whole numbers");
+        });
+    }
+
+    @Test
+    void anAmbiguousDecimalIsRejectedWithBothReadings() throws Exception {
+        onEdt(() -> {
+            TreadmillSettings settings = settings(UnitSystem.METRIC);
+            ProfilePanel panel = panel(settings);
+            ((ComboBox<?>) field(panel, "goalTypeCombo")).setSelectedItem(GoalType.CALORIES);
+            text(panel, "goalValueField").setText("1,500");
+            String message = panel.validateInput();
+            assertNotNull(message);
+            assertTrue(message.contains("1500") && message.contains("1.5"), message);
+            text(panel, "goalValueField").setText("1500");
+            assertNull(panel.validateInput());
+            text(panel, "weightField").setText("72,500");
+            assertTrue(panel.validateInput().contains("72500"), "weights are checked too");
+        });
+    }
+
     private TreadmillSettings settings(UnitSystem units) {
         TreadmillSettings settings = new TreadmillSettings(directory.resolve("sessions.json"));
         settings.setUnitSystem(units);

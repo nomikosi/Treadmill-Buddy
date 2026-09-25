@@ -8,6 +8,7 @@ import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.SpeedPreset;
 import com.codex.desktreadmill.model.UnitSystem;
 import com.codex.desktreadmill.model.UserProfile;
+import com.codex.desktreadmill.storage.SessionStore;
 import com.intellij.ide.actions.RevealFileAction;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
@@ -25,7 +26,10 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledExecutorService;
 
 @Service(Service.Level.APP)
 @State(name = "DeskTreadmillStopwatch", storages = @Storage("deskTreadmillStopwatch.xml"))
@@ -35,13 +39,18 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
 
     public TreadmillSettings() {
         sessionStore = new SessionStore(Paths.get(System.getProperty("user.home"), ".treadmill-buddy", "sessions.json"),
-                AppExecutorUtil.createBoundedScheduledExecutorService("Treadmill Buddy history retry", 1));
+                AppExecutorUtil.createBoundedScheduledExecutorService("Treadmill Buddy history writer", 1));
         sessionStore.onWriteFailure(this::notifyWriteFailureOnce);
     }
 
     /** Test constructor: keeps session history out of the real user home. */
     public TreadmillSettings(Path sessionsFile) {
-        sessionStore = new SessionStore(sessionsFile);
+        this(sessionsFile, null);
+    }
+
+    /** Test constructor with a background writer, as the IDE has one. */
+    public TreadmillSettings(Path sessionsFile, @Nullable ScheduledExecutorService writer) {
+        sessionStore = new SessionStore(sessionsFile, writer);
     }
 
     @Override
@@ -49,20 +58,23 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
         sessionStore.close();
     }
 
-    /** Guards the storage-failure balloon; one warning per IDE run is enough. */
-    private final AtomicBoolean writeFailureNotified = new AtomicBoolean();
+    /** Guards the storage-failure balloons; one warning per kind of failure and IDE run is enough. */
+    private final Set<SessionStore.WriteFailure> notifiedFailures = ConcurrentHashMap.newKeySet();
 
-    private void notifyWriteFailureOnce() {
-        if (!writeFailureNotified.compareAndSet(false, true)) {
+    /** Called on whichever thread wrote: the EDT, or the store's background writer. */
+    private void notifyWriteFailureOnce(SessionStore.WriteFailure failure) {
+        if (!notifiedFailures.add(failure)) {
             return;
         }
+        String content = TreadmillBundle.message(failure == SessionStore.WriteFailure.LOCK_BUSY
+                ? "notification.store.locked.content" : "notification.store.failed.content");
         // The store can fail from early service init; post the balloon later
         // and never let notification plumbing break a save call.
         ApplicationManager.getApplication().invokeLater(() -> {
             try {
                 TreadmillNotifications.withAction(null,
                         TreadmillBundle.message("notification.store.failed.title"),
-                        TreadmillBundle.message("notification.store.failed.content"),
+                        content,
                         TreadmillBundle.message("notification.store.failed.action"),
                         () -> RevealFileAction.openDirectory(
                                 Paths.get(System.getProperty("user.home"), ".treadmill-buddy")));
@@ -157,6 +169,17 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
     }
 
     /**
+     * {@link #saveSession} for autosaves: the history holds the session as
+     * soon as this returns, and the file is written on a background thread.
+     * The future says whether that write reached disk.
+     */
+    public CompletableFuture<Boolean> saveSessionLater(SessionData session) {
+        SessionData copy = withId(session);
+        state.lastSessionId = copy.id;
+        return sessionStore.saveSessionLater(copy);
+    }
+
+    /**
      * Writes a session into the history without touching the "last session"
      * marker: an undo or an import must not make some arbitrary row the walk
      * the clock shows after the next restart.
@@ -224,6 +247,11 @@ public final class TreadmillSettings implements PersistentStateComponent<Treadmi
         if (state.lastSessionId.isBlank() && findSession(id) != null) {
             state.lastSessionId = id;
         }
+    }
+
+    /** The clock was emptied on purpose (New, mode switch); the next start opens with no session. */
+    public void clearLastSessionId() {
+        state.lastSessionId = "";
     }
 
     public List<SpeedPreset> getSpeedPresets() {

@@ -6,11 +6,12 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.PropertyKey;
 
 public final class TreadmillBundle extends DynamicBundle {
-    private static final String BUNDLE = "messages.TreadmillBundle";
+    public static final String BUNDLE = "messages.TreadmillBundle";
     private static final TreadmillBundle INSTANCE = new TreadmillBundle();
 
     private TreadmillBundle() {
-        super(BUNDLE);
+        // The class-taking constructor: 2026.3 deprecates the bare-path one.
+        super(TreadmillBundle.class, BUNDLE);
     }
 
     public static @Nls @NotNull String message(

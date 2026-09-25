@@ -161,12 +161,7 @@ public final class StatsPanel extends JPanel {
             bar.setVisible(false);
             return;
         }
-        double progress = switch (goalType) {
-            case STEPS -> totals.steps;
-            case DISTANCE -> totals.distanceKm;
-            case CALORIES -> totals.calories;
-            case NONE -> 0.0;
-        };
+        double progress = SessionStats.goalProgress(goalType, totals);
         int percent = (int) Math.max(0, Math.min(100, Math.round(progress / target * 100)));
         bar.setVisible(true);
         bar.setValue(percent);

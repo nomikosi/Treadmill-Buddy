@@ -1,7 +1,8 @@
 package com.codex.desktreadmill.engine;
 
-import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.DailyActivity;
+import com.codex.desktreadmill.model.GoalType;
+import com.codex.desktreadmill.model.SessionData;
 import org.jetbrains.annotations.Nullable;
 
 import java.time.DayOfWeek;
@@ -22,6 +23,16 @@ public final class SessionStats {
         public long steps;
         public double calories;
         public int sessionCount;
+    }
+
+    /** Progress toward a goal of this type, in its metric unit: steps, km, or kcal. */
+    public static double goalProgress(GoalType type, Totals totals) {
+        return switch (type) {
+            case STEPS -> totals.steps;
+            case DISTANCE -> totals.distanceKm;
+            case CALORIES -> totals.calories;
+            case NONE -> 0.0;
+        };
     }
 
     /**

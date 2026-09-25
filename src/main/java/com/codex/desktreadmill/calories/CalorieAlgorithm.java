@@ -1,12 +1,11 @@
 package com.codex.desktreadmill.calories;
 
+import com.codex.desktreadmill.TreadmillBundle;
 import com.codex.desktreadmill.model.UserProfile;
+import org.jetbrains.annotations.PropertyKey;
 
 public enum CalorieAlgorithm {
-    ACSM_FLAT(
-            "ACSM treadmill",
-            "Most commonly used in exercise-science references. Uses ACSM walking/running oxygen-cost equations and supports incline."
-    ) {
+    ACSM_FLAT("algorithm.acsm", "algorithm.acsm.description") {
         @Override
         public double kcalPerMinute(UserProfile profile, double speedKmh, double inclinePercent) {
             double speedMetersPerMinute = speedKmh * 1000.0 / 60.0;
@@ -17,28 +16,19 @@ public enum CalorieAlgorithm {
             return vo2 * profile.weightKg / 1000.0 * KCAL_PER_LITER_OXYGEN;
         }
     },
-    COMPENDIUM_MET_GROSS(
-            "Compendium MET gross",
-            "Uses speed bands from the Compendium of Physical Activities and includes resting energy. Ignores incline."
-    ) {
+    COMPENDIUM_MET_GROSS("algorithm.compendiumGross", "algorithm.compendiumGross.description") {
         @Override
         public double kcalPerMinute(UserProfile profile, double speedKmh, double inclinePercent) {
             return metForSpeed(speedKmh) * 3.5 * profile.weightKg / 200.0;
         }
     },
-    COMPENDIUM_MET_ACTIVE(
-            "Compendium MET active",
-            "Uses Compendium MET speed bands minus 1 MET, a conservative active-calorie estimate. Ignores incline."
-    ) {
+    COMPENDIUM_MET_ACTIVE("algorithm.compendiumActive", "algorithm.compendiumActive.description") {
         @Override
         public double kcalPerMinute(UserProfile profile, double speedKmh, double inclinePercent) {
             return Math.max(0.0, metForSpeed(speedKmh) - 1.0) * 3.5 * profile.weightKg / 200.0;
         }
     },
-    DISTANCE_COST(
-            "Distance cost per km",
-            "Uses common cost-of-transport estimates: about 0.8 kcal/kg/km walking, 1.0 running. Ignores incline."
-    ) {
+    DISTANCE_COST("algorithm.distanceCost", "algorithm.distanceCost.description") {
         @Override
         public double kcalPerMinute(UserProfile profile, double speedKmh, double inclinePercent) {
             double costPerKgKm = speedKmh <= WALK_RUN_TRANSITION_KMH ? 0.8 : 1.0;
@@ -49,12 +39,13 @@ public enum CalorieAlgorithm {
     private static final double WALK_RUN_TRANSITION_KMH = 8.0;
     private static final double KCAL_PER_LITER_OXYGEN = 5.0;
 
-    private final String label;
-    private final String description;
+    private final String labelKey;
+    private final String descriptionKey;
 
-    CalorieAlgorithm(String label, String description) {
-        this.label = label;
-        this.description = description;
+    CalorieAlgorithm(@PropertyKey(resourceBundle = TreadmillBundle.BUNDLE) String labelKey,
+                     @PropertyKey(resourceBundle = TreadmillBundle.BUNDLE) String descriptionKey) {
+        this.labelKey = labelKey;
+        this.descriptionKey = descriptionKey;
     }
 
     public abstract double kcalPerMinute(UserProfile profile, double speedKmh, double inclinePercent);
@@ -68,11 +59,11 @@ public enum CalorieAlgorithm {
     }
 
     public String getLabel() {
-        return label;
+        return TreadmillBundle.message(labelKey);
     }
 
     public String getDescription() {
-        return description;
+        return TreadmillBundle.message(descriptionKey);
     }
 
     public static CalorieAlgorithm fromId(String id) {
@@ -120,6 +111,6 @@ public enum CalorieAlgorithm {
 
     @Override
     public String toString() {
-        return label;
+        return getLabel();
     }
 }

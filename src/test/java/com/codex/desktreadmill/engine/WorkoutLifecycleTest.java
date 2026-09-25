@@ -8,6 +8,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import javax.swing.SwingUtilities;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -15,6 +16,10 @@ import java.nio.file.StandardOpenOption;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -31,7 +36,7 @@ class WorkoutLifecycleTest {
         now = today.atTime(12, 0).atZone(zone).toInstant().toEpochMilli();
         settings = new TreadmillSettings(directory.resolve("sessions.json"));
         settings.setAutoPauseMinutes(0);
-        engine = new WorkoutEngine(settings, () -> now, false);
+        engine = new WorkoutEngine(settings, () -> now, WorkoutFeedback.SILENT);
     }
 
     @AfterEach
@@ -85,7 +90,7 @@ class WorkoutLifecycleTest {
         settings.dispose();
         settings = otherIde();
         settings.setAutoPauseMinutes(0);
-        engine = new WorkoutEngine(settings, () -> now, false);
+        engine = new WorkoutEngine(settings, () -> now, WorkoutFeedback.SILENT);
         SessionData persisted = settings.findSession("fractional");
         assertEquals(before.stepRemainder, persisted.stepRemainder);
         engine.loadSession(persisted);
@@ -155,6 +160,54 @@ class WorkoutLifecycleTest {
         assertNull(otherIde().findSession("old"));
         assertNull(otherIde().findSession("current"));
         assertNotNull(otherIde().findSession("keep"));
+    }
+
+    @Test
+    void autosavesAreWrittenInTheBackgroundAndAnnouncedOnTheEdt() throws Exception {
+        TreadmillSettings background = new TreadmillSettings(directory.resolve("async.json"),
+                new ScheduledThreadPoolExecutor(1));
+        background.setAutoPauseMinutes(0);
+        WorkoutEngine asyncEngine = new WorkoutEngine(background, () -> now, WorkoutFeedback.SILENT);
+        try {
+            asyncEngine.startSession(walk("autosaved"));
+            CountDownLatch announced = new CountDownLatch(1);
+            AtomicBoolean onEdt = new AtomicBoolean();
+            asyncEngine.addListener(new WorkoutEngine.Listener() {
+                @Override
+                public void workoutStateChanged() {
+                }
+
+                @Override
+                public void sessionsPersisted() {
+                    onEdt.set(SwingUtilities.isEventDispatchThread());
+                    announced.countDown();
+                }
+            });
+            now += 30_000;
+            asyncEngine.tick(); // Due for the 30-second autosave.
+
+            assertTrue(announced.await(5, TimeUnit.SECONDS), "listeners hear about the autosave once it is written");
+            assertTrue(onEdt.get(), "and they hear about it on the EDT, not the writer thread");
+            assertEquals(30, new TreadmillSettings(directory.resolve("async.json"))
+                    .findSession("autosaved").elapsedSeconds);
+        } finally {
+            asyncEngine.dispose();
+            background.dispose();
+        }
+    }
+
+    @Test
+    void undoingAnUnrelatedDeletionKeepsAMarkerThatNewCleared() {
+        settings.restoreSession(walk("other"));
+        engine.startSession(walk("current"));
+        engine.pause();
+        WorkoutEngine.Deletion deletion = engine.deleteSessions(List.of("other"));
+        assertEquals("current", deletion.lastSessionId());
+        engine.clearSession();
+
+        engine.undoDeletion(deletion);
+        assertEquals("", settings.getLastSessionId(), "New emptied the clock; the undo must not refill it");
+        assertNotNull(otherIde().findSession("other"));
     }
 
     @Test
@@ -267,7 +320,7 @@ class WorkoutLifecycleTest {
         engine.pause();
         engine.dispose();
         settings = otherIde();
-        engine = new WorkoutEngine(settings, () -> now, false);
+        engine = new WorkoutEngine(settings, () -> now, WorkoutFeedback.SILENT);
         engine.loadSession(settings.findSession("current"));
         engine.resume();
         now += 750;

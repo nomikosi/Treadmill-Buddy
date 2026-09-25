@@ -1,4 +1,4 @@
-package com.codex.desktreadmill.ui;
+package com.codex.desktreadmill.transfer;
 
 import com.codex.desktreadmill.calories.CalorieAlgorithm;
 import com.codex.desktreadmill.engine.WorkoutMath;
@@ -70,6 +70,23 @@ class SessionTransferTest {
     }
 
     @Test
+    void csvWritesStableIdsAndStillReadsTheLabelsOlderExportsCarry() {
+        String csv = SessionCsvCodec.buildCsv(List.of(sampleSession()));
+        assertTrue(csv.contains(",CALORIE_BURN,ACSM_FLAT,"), "display labels are not a file format: " + csv);
+
+        String legacy = "name,mode,algorithm,elapsed_seconds\n"
+                + "A,KG burn,Compendium MET active,60\n"
+                + "B,interval walk,Distance cost per km,60\n"
+                + "C,Marathon,ACSM treadmill (default),60\n";
+        List<SessionData> parsed = SessionCsvCodec.parseCsv(legacy);
+        assertEquals(SessionMode.FAT_BURN.name(), parsed.get(0).modeId);
+        assertEquals(CalorieAlgorithm.COMPENDIUM_MET_ACTIVE.name(), parsed.get(0).algorithmId);
+        assertEquals(SessionMode.INTERVAL.name(), parsed.get(1).modeId);
+        assertEquals(CalorieAlgorithm.DISTANCE_COST.name(), parsed.get(1).algorithmId);
+        assertEquals(CalorieAlgorithm.ACSM_FLAT.name(), parsed.get(2).algorithmId);
+    }
+
+    @Test
     void csvRoundTripPreservesActivityDatesMetricsAndPartialSeconds() {
         SessionData original = sampleSession();
         original.timerRemainderMillis = 750;
@@ -138,7 +155,7 @@ class SessionTransferTest {
         UserProfile profile = new UserProfile();
         profile.weightKg = 70.0;
         profile.heightCm = 170.0;
-        SessionTransfer.rehydrateAfterImport(session, profile);
+        SessionImport.rehydrateAfterImport(session, profile);
         assertTrue(session.remainingSeconds > 0, "the countdown should be rebuilt from the remaining calories");
     }
 
@@ -152,14 +169,14 @@ class SessionTransferTest {
         completed.modeId = SessionMode.CALORIE_BURN.name();
         completed.completed = true;
         completed.remainingSeconds = 0L;
-        SessionTransfer.rehydrateAfterImport(completed, profile);
+        SessionImport.rehydrateAfterImport(completed, profile);
         assertEquals(0L, completed.remainingSeconds);
 
         SessionData intact = sampleSession();
         intact.modeId = SessionMode.CALORIE_BURN.name();
         intact.completed = false;
         intact.remainingSeconds = 777L;
-        SessionTransfer.rehydrateAfterImport(intact, profile);
+        SessionImport.rehydrateAfterImport(intact, profile);
         assertEquals(777L, intact.remainingSeconds, "an exported countdown must not be recomputed");
     }
 
@@ -228,7 +245,7 @@ class SessionTransferTest {
         assertEquals(1_800L, parsed.elapsedSeconds);
         assertEquals(0L, parsed.remainingSeconds, "a legacy row carries no countdown state");
         assertTrue(parsed.id.isBlank(), "a legacy row has no id of its own");
-        List<SessionData> selected = SessionTransfer.selectNewSessions(new ArrayList<>(List.of(parsed)), List.of());
+        List<SessionData> selected = SessionImport.selectNewSessions(new ArrayList<>(List.of(parsed)), List.of());
         assertEquals(1, selected.size());
         assertFalse(selected.get(0).id.isBlank(), "a legacy row gets an id once it is taken in");
 
@@ -236,7 +253,7 @@ class SessionTransferTest {
         UserProfile profile = new UserProfile();
         profile.weightKg = 70.0;
         profile.heightCm = 170.0;
-        SessionTransfer.rehydrateAfterImport(parsed, profile);
+        SessionImport.rehydrateAfterImport(parsed, profile);
         assertTrue(parsed.remainingSeconds > 0);
     }
 
@@ -348,7 +365,7 @@ class SessionTransferTest {
         first.id = "1";
         SessionData second = sampleSession();
         second.id = "2";
-        List<SessionData> selected = SessionTransfer.selectNewSessions(
+        List<SessionData> selected = SessionImport.selectNewSessions(
                 new ArrayList<>(List.of(first, second)), List.of());
         assertEquals(2, selected.size());
     }
@@ -358,7 +375,7 @@ class SessionTransferTest {
         SessionData known = sampleSession();
         SessionData reimported = sampleSession();
         reimported.name = "renamed since the export";
-        List<SessionData> selected = SessionTransfer.selectNewSessions(
+        List<SessionData> selected = SessionImport.selectNewSessions(
                 new ArrayList<>(List.of(reimported)), List.of(known));
         assertTrue(selected.isEmpty(), "same id means the same session, whatever the name says now");
     }
@@ -371,7 +388,7 @@ class SessionTransferTest {
         SessionData legacyNew = sampleSession();
         legacyNew.id = "";
         legacyNew.name = "A different walk";
-        List<SessionData> selected = SessionTransfer.selectNewSessions(
+        List<SessionData> selected = SessionImport.selectNewSessions(
                 new ArrayList<>(List.of(legacyDuplicate, legacyNew)), List.of(known));
         assertEquals(1, selected.size());
         assertEquals("A different walk", selected.get(0).name);

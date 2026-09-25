@@ -1,4 +1,4 @@
-package com.codex.desktreadmill.settings;
+package com.codex.desktreadmill.storage;
 
 import com.codex.desktreadmill.model.SessionData;
 import com.google.gson.Gson;
@@ -27,9 +27,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 /**
  * Durable session history shared across all JetBrains IDEs. Sessions live in
@@ -51,11 +53,30 @@ import java.util.concurrent.TimeUnit;
  * reported through the optional {@link #onWriteFailure} callback, because a
  * store that silently keeps everything in memory looks healthy right up
  * until the IDE closes.</p>
+ *
+ * <p>A lock held by another IDE is not a failure of that kind: its write
+ * takes milliseconds and the retry follows a second later, so contention is
+ * reported only once it outlasts several retries. Closing is the one write
+ * that waits for the lock, briefly - it is the last chance for pending
+ * changes. With an executor, {@link #saveSessionLater} moves routine writes
+ * such as autosaves off the calling thread.</p>
  */
 public final class SessionStore implements AutoCloseable {
     private static final Logger LOG = Logger.getInstance(SessionStore.class);
     private static final long RETRY_DELAY_MILLIS = 1_000L;
+    /** Failed attempts in a row (about 15 s of backoff) after which a busy lock is worth a warning. */
+    private static final int LOCK_FAILURES_BEFORE_WARNING = 5;
+    private static final long CLOSE_LOCK_WAIT_MILLIS = 2_000L;
+    private static final long LOCK_POLL_MILLIS = 50L;
     private static final DateTimeFormatter CORRUPT_SUFFIX = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
+
+    /** Why a write did not reach disk. */
+    public enum WriteFailure {
+        /** The file or its folder cannot be written: disk full, permissions, a file where the folder belongs. */
+        IO_ERROR,
+        /** Another writer kept the history lock through several retries. */
+        LOCK_BUSY
+    }
 
     private final Path file;
     private final Path lockFile;
@@ -71,10 +92,17 @@ public final class SessionStore implements AutoCloseable {
     private long lastSyncedSize = -1L;
     /** The file exists but could not be parsed the last time it was read. */
     private boolean diskCorrupt;
-    private @Nullable Runnable writeFailureCallback;
+    private @Nullable Consumer<WriteFailure> writeFailureCallback;
     private final @Nullable ScheduledExecutorService retryExecutor;
-    private @Nullable ScheduledFuture<?> pendingRetry;
+    /** The queued background write: an immediate one for {@link #saveSessionLater}, or a retry. */
+    private @Nullable ScheduledFuture<?> pendingWrite;
+    /** Bumped whenever the queued write is scheduled or dropped, so a superseded task stands down. */
+    private long writeGeneration;
     private long retryDelayMillis = RETRY_DELAY_MILLIS;
+    private int consecutiveLockFailures;
+    private long closeLockWaitMillis = CLOSE_LOCK_WAIT_MILLIS;
+    /** Callers of {@link #saveSessionLater} waiting for the next write attempt. */
+    private final List<CompletableFuture<Boolean>> pendingResults = new ArrayList<>();
     private boolean closed;
 
     public SessionStore(Path file) {
@@ -88,9 +116,17 @@ public final class SessionStore implements AutoCloseable {
         this.retryExecutor = retryExecutor;
     }
 
-    /** Invoked (once per failure, on the caller's thread) when a write doesn't reach disk. */
-    public synchronized void onWriteFailure(Runnable callback) {
+    /**
+     * Invoked on the writing thread when a write doesn't reach disk: at once
+     * for an I/O error, and for a busy lock only when it keeps failing.
+     */
+    public synchronized void onWriteFailure(Consumer<WriteFailure> callback) {
         writeFailureCallback = callback;
+    }
+
+    /** Test hook: how long {@link #close} waits for another writer's lock. */
+    synchronized void setCloseLockWaitMillis(long millis) {
+        closeLockWaitMillis = millis;
     }
 
     public synchronized List<SessionData> getSessions() {
@@ -116,7 +152,31 @@ public final class SessionStore implements AutoCloseable {
     public synchronized boolean saveSession(SessionData session) {
         ensureLoaded();
         putInMemory(session);
-        return write();
+        return write(0L);
+    }
+
+    /**
+     * Takes the session into memory at once and writes it on the executor, so
+     * a periodic autosave never makes the caller wait for disk. The future
+     * says whether that write reached disk; it completes with false straight
+     * away while a retry is already scheduled, which will carry this change
+     * too. Without an executor the write happens before this returns.
+     */
+    public synchronized CompletableFuture<Boolean> saveSessionLater(SessionData session) {
+        ensureLoaded();
+        putInMemory(session);
+        if (retryExecutor == null || closed) {
+            return CompletableFuture.completedFuture(write(0L));
+        }
+        if (pendingWrite != null && pendingWrite.getDelay(TimeUnit.MILLISECONDS) > 0) {
+            return CompletableFuture.completedFuture(false);
+        }
+        CompletableFuture<Boolean> result = new CompletableFuture<>();
+        pendingResults.add(result);
+        if (pendingWrite == null) {
+            scheduleWrite(0L);
+        }
+        return result;
     }
 
     /**
@@ -131,7 +191,7 @@ public final class SessionStore implements AutoCloseable {
         for (SessionData session : toSave) {
             putInMemory(session);
         }
-        return write();
+        return write(0L);
     }
 
     private void putInMemory(SessionData session) {
@@ -156,7 +216,7 @@ public final class SessionStore implements AutoCloseable {
         }
         dirtyIds.remove(id);
         deletedIds.add(id);
-        return write();
+        return write(0L);
     }
 
     /** Bulk delete with a single file write (used by "delete older than" cleanup). */
@@ -168,7 +228,7 @@ public final class SessionStore implements AutoCloseable {
         sessions.removeIf(session -> ids.contains(session.id));
         dirtyIds.removeAll(ids);
         deletedIds.addAll(ids);
-        return write();
+        return write(0L);
     }
 
     /**
@@ -211,7 +271,7 @@ public final class SessionStore implements AutoCloseable {
             }
             pending |= dirtyIds.contains(session.id);
         }
-        return !pending || write();
+        return !pending || write(0L);
     }
 
     private int indexOf(String id) {
@@ -322,10 +382,11 @@ public final class SessionStore implements AutoCloseable {
         }
     }
 
-    private boolean write() {
+    /** One write attempt, waiting up to {@code lockWaitMillis} for another writer's lock (0: not at all). */
+    private boolean write(long lockWaitMillis) {
         try {
             Files.createDirectories(file.getParent());
-            try (ProcessLock ignored = acquireLock()) {
+            try (ProcessLock ignored = acquireLock(lockWaitMillis)) {
                 // A cached timestamp/size cannot prove our bytes are current:
                 // another writer can replace the file during an unlocked read,
                 // or replace it with the same size on a coarse filesystem clock.
@@ -346,11 +407,20 @@ public final class SessionStore implements AutoCloseable {
             deletedIds.clear();
             diskCorrupt = false;
             retryDelayMillis = RETRY_DELAY_MILLIS;
-            if (pendingRetry != null) {
-                pendingRetry.cancel(false);
-                pendingRetry = null;
-            }
+            consecutiveLockFailures = 0;
+            cancelPendingWrite();
+            completePendingResults(true);
             return true;
+        } catch (LockUnavailableException busy) {
+            // Usually another IDE in the middle of its own few-millisecond
+            // write; the retry below picks the changes up a second later.
+            LOG.info("History lock unavailable; retrying: " + busy.getMessage());
+            scheduleRetry();
+            if (++consecutiveLockFailures == LOCK_FAILURES_BEFORE_WARNING) {
+                reportFailure(WriteFailure.LOCK_BUSY);
+            }
+            completePendingResults(false);
+            return false;
         } catch (IOException exception) {
             // Sessions stay in memory and the next successful write persists
             // them - but the user has to hear about it, because "healthy until
@@ -358,28 +428,64 @@ public final class SessionStore implements AutoCloseable {
             // the worst possible way to find out.
             LOG.warn("Could not write " + file + "; sessions are only in memory", exception);
             scheduleRetry();
-            if (writeFailureCallback != null) {
-                writeFailureCallback.run();
-            }
+            reportFailure(WriteFailure.IO_ERROR);
+            completePendingResults(false);
             return false;
         }
     }
 
-    /** Never wait on the EDT or write without the lock; contention leaves changes pending. */
-    private ProcessLock acquireLock() throws IOException {
+    private void reportFailure(WriteFailure failure) {
+        if (writeFailureCallback != null) {
+            writeFailureCallback.accept(failure);
+        }
+    }
+
+    private void completePendingResults(boolean persisted) {
+        List<CompletableFuture<Boolean>> waiting = List.copyOf(pendingResults);
+        pendingResults.clear();
+        for (CompletableFuture<Boolean> result : waiting) {
+            result.complete(persisted);
+        }
+    }
+
+    /**
+     * Never writes without the lock. Routine writes don't wait for it at all -
+     * the EDT must not stall on another IDE - and leave the changes pending;
+     * {@code waitMillis} lets the final write on close outlast a short one.
+     */
+    private ProcessLock acquireLock(long waitMillis) throws IOException {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(waitMillis);
+        while (true) {
+            try {
+                return tryLock();
+            } catch (LockUnavailableException busy) {
+                if (System.nanoTime() >= deadline || Thread.currentThread().isInterrupted()) {
+                    throw busy;
+                }
+                try {
+                    Thread.sleep(LOCK_POLL_MILLIS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw busy;
+                }
+            }
+        }
+    }
+
+    private ProcessLock tryLock() throws IOException {
         FileChannel channel = FileChannel.open(lockFile, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
         try {
             if (Thread.currentThread().isInterrupted()) {
-                throw new IOException("Interrupted before locking " + lockFile);
+                throw new LockUnavailableException("Interrupted before locking " + lockFile, null);
             }
             FileLock lock = channel.tryLock();
             if (lock == null) {
-                throw new IOException("History lock is held by another writer: " + lockFile);
+                throw new LockUnavailableException("History lock is held by another writer: " + lockFile, null);
             }
             return new ProcessLock(channel, lock);
         } catch (OverlappingFileLockException exception) {
             closeQuietly(channel);
-            throw new IOException("History lock is held by another writer: " + lockFile, exception);
+            throw new LockUnavailableException("History lock is held by another writer: " + lockFile, exception);
         } catch (IOException | RuntimeException exception) {
             closeQuietly(channel);
             throw exception;
@@ -388,22 +494,38 @@ public final class SessionStore implements AutoCloseable {
 
     /** Retries all pending saves and deletions, including changes to a session no longer on the clock. */
     public synchronized boolean flushPendingWrites() {
-        return dirtyIds.isEmpty() && deletedIds.isEmpty() || write();
+        return dirtyIds.isEmpty() && deletedIds.isEmpty() || write(0L);
     }
 
     private void scheduleRetry() {
-        if (retryExecutor == null || closed || pendingRetry != null) {
+        if (retryExecutor == null || closed || pendingWrite != null) {
             return;
         }
-        pendingRetry = retryExecutor.schedule(() -> {
-            synchronized (this) {
-                pendingRetry = null;
-                if (!closed) {
-                    flushPendingWrites();
-                }
-            }
-        }, retryDelayMillis, TimeUnit.MILLISECONDS);
+        scheduleWrite(retryDelayMillis);
         retryDelayMillis = Math.min(60_000L, retryDelayMillis * 2);
+    }
+
+    private void scheduleWrite(long delayMillis) {
+        long generation = ++writeGeneration;
+        pendingWrite = retryExecutor.schedule(() -> writeInBackground(generation), delayMillis, TimeUnit.MILLISECONDS);
+    }
+
+    private void cancelPendingWrite() {
+        writeGeneration++;
+        if (pendingWrite != null) {
+            pendingWrite.cancel(false);
+            pendingWrite = null;
+        }
+    }
+
+    private synchronized void writeInBackground(long generation) {
+        // A task that already started can't be cancelled; it may have waited
+        // for this lock while another write did its job or took its place.
+        if (generation != writeGeneration || closed) {
+            return;
+        }
+        pendingWrite = null;
+        completePendingResults(flushPendingWrites());
     }
 
     @Override
@@ -412,13 +534,20 @@ public final class SessionStore implements AutoCloseable {
             return;
         }
         closed = true;
-        flushPendingWrites();
-        if (pendingRetry != null) {
-            pendingRetry.cancel(false);
-            pendingRetry = null;
-        }
+        cancelPendingWrite();
+        // The last chance for pending changes: give a writer in another IDE
+        // a moment to finish instead of dropping them at the first try.
+        boolean persisted = dirtyIds.isEmpty() && deletedIds.isEmpty() || write(closeLockWaitMillis);
+        completePendingResults(persisted);
         if (retryExecutor != null) {
             retryExecutor.shutdownNow();
+        }
+    }
+
+    /** The lock is held elsewhere, or the writer was interrupted: transient, unlike a disk error. */
+    private static final class LockUnavailableException extends IOException {
+        private LockUnavailableException(String message, @Nullable Throwable cause) {
+            super(message, cause);
         }
     }
 
