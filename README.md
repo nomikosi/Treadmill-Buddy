@@ -21,7 +21,7 @@ Treadmill Buddy is a JetBrains IDE plugin for developers who use an under-desk t
 - Tracks personal records (longest session, best day distance and steps) and notifies you when you break one.
 - Updates countdown estimates live when speed, incline, or calorie algorithm changes.
 - Auto-pauses after keyboard and mouse inactivity, then resumes when typing starts again; a `Keep Running While Idle` toggle suspends this for reading-heavy walking or meetings.
-- Optionally reminds you to move after a configurable sitting time.
+- Optionally reminds you to move after a configurable sitting time, counted only while you're at the keyboard, so reminders don't pile up while you're away.
 - Provides IDE actions (`Start/Pause Treadmill Session`, `New Treadmill Session`, ...) in the Tools menu, the tool window title bar, and Find Action, so you can bind keyboard shortcuts.
 - Keeps one shared workout running across all open project windows — timing is wall-clock based, so a busy IDE never shortens your session.
 - Stores profile and default settings in IDE settings.
@@ -72,7 +72,7 @@ On first IDE startup, Treadmill Buddy shows a notification inviting you to set u
 You can edit everything later from `Settings | Tools | Treadmill Buddy`; switching units converts the displayed values on the spot, and all stored data stays metric internally, so nothing is lost by switching back and forth.
 
 - The auto-pause timeout defaults to `10` minutes; `0` disables auto-pause.
-- The move reminder is off (`0`) by default; set it to e.g. `60` to get a nudge after an hour without walking.
+- The move reminder is off (`0`) by default; set it to e.g. `60` to get a nudge after an hour at the IDE without walking. After 10 minutes without keyboard or mouse input you count as away: no reminders arrive, and the hour starts over when you're back.
 - The daily goal is `None` by default. Pick steps, distance, or calories and a value; the tool window then shows a progress bar for today, and you get a one-time notification each day you reach the goal.
 - Only data that actually feeds the calorie models is collected — weight and height.
 
@@ -95,7 +95,7 @@ You can edit everything later from `Settings | Tools | Treadmill Buddy`; switchi
 - Pause and Resume preserve partial seconds, including after loading a session or restarting the IDE.
 - New walking activity is recorded by day, so resuming an older session or walking across midnight contributes to the correct daily goals, charts, and streaks. Historical walks without a daily breakdown keep their original creation-date attribution.
 - If another IDE holds the history lock, pending saves and deletions are retried in the background; the plugin never writes without the lock. Brief contention is retried quietly, a warning appears only when the lock stays busy, and closing the IDE waits up to two seconds for it.
-- The 30-second autosave writes the history file on a background thread, so a long history never stalls the editor.
+- The 30-second autosave writes the history file on a background thread, and reading the history never waits for a write in progress, so a long history never stalls the editor.
 - Starting a new session, switching mode, or loading another session while one is running pauses and saves the running one first, so no walked time is lost. `New` leaves the clock empty, also after a restart or when the tool window opens in another project.
 - `Reset` on a session with walked time asks for confirmation, because it clears that walk from the history; the notification offers an undo, which works even after the clock was started again.
 - Number fields accept `1.5` and `1,5`. Thousands separators work where they cannot be misread (`10,000` steps, `1,234.5`); a decimal field flags an ambiguous `1,500` and suggests `1500` or `1.5`.
@@ -103,7 +103,8 @@ You can edit everything later from `Settings | Tools | Treadmill Buddy`; switchi
 - Saved sessions appear in a list with duration, distance, calories, and date; double-click or press Enter to load one, use the toolbar to delete, import CSV/JSON, or export sessions as CSV, JSON, or TCX. The list shows the 25 most recent sessions with a Show All toggle, and refreshes when the IDE regains focus so walks saved in another JetBrains IDE appear immediately.
 - The CSV export always uses metric columns (`speed_kmh`, `distance_km`), regardless of the display units, so exported data stays comparable, and re-importing skips sessions you already have. Modes and algorithms are written as stable ids (`CALORIE_BURN`, `ACSM_FLAT`); older exports with English labels still import.
 - CSV names can contain commas, quotes, and line breaks. Malformed quoting rejects the import before any sessions are saved.
-- History cleanup uses the latest recorded activity date and keeps the session currently on the clock, including while paused.
+- An export opened and re-saved in Excel still imports: semicolon separators, decimal commas, localized dates and TRUE values (`25.09.2026 10:00`, `WAHR`), Windows-1252 text, and ids Excel rewrote as `1,72725E+12` are all read. Rows that still can't be read are counted in the import message, which names the first one.
+- History cleanup uses the latest recorded activity date and keeps the session currently on the clock, including while paused. The dialog only accepts a whole number of days, and the deletion can be undone from its notification.
 - TCX exports use speed segments when they cover the whole workout; sessions with incomplete speed histories use evenly interpolated distance across the full duration.
 
 ## Build and Development

@@ -15,6 +15,7 @@ import com.intellij.openapi.fileChooser.FileChooserFactory;
 import com.intellij.openapi.fileChooser.FileSaverDescriptor;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.openapi.util.text.StringUtil;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.vfs.VirtualFileWrapper;
 import org.jetbrains.annotations.Nullable;
@@ -86,34 +87,48 @@ public final class SessionTransfer {
         if (file == null) {
             return -1;
         }
-        List<SessionData> parsed;
+        SessionCsvCodec.CsvRead read;
         try {
-            parsed = SessionCsvCodec.parseCsv(Files.readString(file.toNioPath()));
+            read = SessionCsvCodec.read(SessionCsvCodec.decode(Files.readAllBytes(file.toNioPath())));
+        } catch (SessionCsvCodec.NotAnExportException notAnExport) {
+            Messages.showErrorDialog(project, TreadmillBundle.message("transfer.import.csv.notExport"),
+                    TreadmillBundle.message("transfer.import.errorTitle"));
+            return -1;
         } catch (IOException | IllegalArgumentException exception) {
             Messages.showErrorDialog(project,
                     TreadmillBundle.message("transfer.import.csv.error", String.valueOf(exception.getMessage())),
                     TreadmillBundle.message("transfer.import.errorTitle"));
             return -1;
         }
-        List<SessionData> toImport = SessionImport.selectNewSessions(parsed, settings.getSessions());
+        List<SessionData> toImport = SessionImport.selectNewSessions(read.sessions(), settings.getSessions());
         for (SessionData session : toImport) {
             SessionImport.rehydrateAfterImport(session, settings.getProfile());
         }
-        return finishImport(project, settings, toImport);
+        return finishImport(project, settings, toImport, read.skippedRows(), read.firstProblem());
+    }
+
+    private static int finishImport(@Nullable Project project, TreadmillSettings settings, List<SessionData> toImport) {
+        return finishImport(project, settings, toImport, 0, null);
     }
 
     /**
      * One store write for the whole file: saving row by row rewrites the JSON
      * once per session, which freezes the EDT on a real backup. The balloon
      * says when that write did not reach disk rather than claiming success
-     * for sessions that exist only in memory.
+     * for sessions that exist only in memory, and names the rows that could
+     * not be read instead of leaving them out without a word.
      */
-    private static int finishImport(@Nullable Project project, TreadmillSettings settings, List<SessionData> toImport) {
+    private static int finishImport(@Nullable Project project, TreadmillSettings settings, List<SessionData> toImport,
+                                    int skippedRows, @Nullable String firstProblem) {
         boolean persisted = settings.saveSessions(toImport);
-        TreadmillNotifications.info(project,
-                TreadmillBundle.message("notification.title"),
-                TreadmillBundle.message(persisted ? "notification.import.done" : "notification.import.failed",
-                        toImport.size()));
+        String message = TreadmillBundle.message(persisted ? "notification.import.done" : "notification.import.failed",
+                toImport.size());
+        if (skippedRows > 0) {
+            // Balloon content is HTML, and the problem quotes the file.
+            message += " " + TreadmillBundle.message("notification.import.skipped",
+                    skippedRows, StringUtil.escapeXmlEntities(String.valueOf(firstProblem)));
+        }
+        TreadmillNotifications.info(project, TreadmillBundle.message("notification.title"), message);
         return toImport.size();
     }
 

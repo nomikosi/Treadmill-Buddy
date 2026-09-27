@@ -53,7 +53,10 @@ limitations under the License.
                     <li>The settings page is under Settings | Tools | Treadmill Buddy, as documented, instead of Other Settings, and Settings search finds its individual options.</li>
                     <li>Number fields read thousands separators where they cannot be misread, so a 10,000-step goal is no longer saved as 10 steps. An ambiguous decimal such as 1,500 is flagged with both readings.</li>
                     <li>Another IDE briefly holding the history lock no longer triggers the disk-failure warning: saves retry quietly, closing the IDE waits a moment for the lock, and a separate warning appears only when the lock stays busy.</li>
-                    <li>The 30-second autosave writes the history file on a background thread instead of the UI thread.</li>
+                    <li>The 30-second autosave writes the history file on a background thread instead of the UI thread, and reading the history no longer waits for a write in progress.</li>
+                    <li>Move reminders count only time at the keyboard: after 10 minutes without input no reminders arrive, so they no longer pile up in the notification log overnight.</li>
+                    <li>CSV exports re-saved in Excel import again: semicolon separators, decimal commas, localized dates and booleans, Windows-1252 text, and ids rewritten in scientific notation are read, and rows that can't be read are counted in the import message.</li>
+                    <li>Deleting old sessions in bulk can be undone from the notification, the dialog rejects a day count it cannot use, and it no longer reports deleting zero sessions.</li>
                     <li>CSV exports write modes and algorithms as stable ids; exports with the older English labels still import.</li>
                 </ul>
             </li>

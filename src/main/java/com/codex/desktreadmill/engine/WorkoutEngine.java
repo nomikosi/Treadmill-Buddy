@@ -712,9 +712,14 @@ public final class WorkoutEngine implements Disposable {
         return lastActivityMillis + idleMinutes * 60_000L;
     }
 
-    /** Keyboard or mouse activity seen by the driver: it keeps a running session from idling out. */
+    /**
+     * Keyboard or mouse activity seen by the driver: it keeps a running
+     * session from idling out, and tells the move reminder someone is there.
+     */
     void noteUserActivity() {
-        lastActivityMillis = clock.getAsLong();
+        long now = clock.getAsLong();
+        lastActivityMillis = now;
+        moveReminder.noteInput(now);
     }
 
     /** The driver's response to typing while auto-paused. */

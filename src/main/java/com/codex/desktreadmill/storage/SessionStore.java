@@ -22,7 +22,9 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -31,6 +33,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
 /**
@@ -60,6 +63,14 @@ import java.util.function.Consumer;
  * that waits for the lock, briefly - it is the last chance for pending
  * changes. With an executor, {@link #saveSessionLater} moves routine writes
  * such as autosaves off the calling thread.</p>
+ *
+ * <p>Threading: the object monitor guards the in-memory history and is only
+ * ever held briefly, never across file I/O, so reads answer at once even
+ * while a background write is busy with the disk. Writers take
+ * {@link #writeLock} first - never while holding the monitor - so they run
+ * one at a time. A write carries a snapshot of the history; every save and
+ * delete is numbered, and a finished write clears only the changes it
+ * carried, so one staged while it ran stays pending for the next.</p>
  */
 public final class SessionStore implements AutoCloseable {
     private static final Logger LOG = Logger.getInstance(SessionStore.class);
@@ -69,6 +80,8 @@ public final class SessionStore implements AutoCloseable {
     private static final long CLOSE_LOCK_WAIT_MILLIS = 2_000L;
     private static final long LOCK_POLL_MILLIS = 50L;
     private static final DateTimeFormatter CORRUPT_SUFFIX = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
+    private static final Type SESSION_LIST = new TypeToken<List<SessionData>>() {
+    }.getType();
 
     /** Why a write did not reach disk. */
     public enum WriteFailure {
@@ -81,19 +94,28 @@ public final class SessionStore implements AutoCloseable {
     private final Path file;
     private final Path lockFile;
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
+    /** One writer at a time in this process. Taken before the monitor, never while holding it. */
+    private final ReentrantLock writeLock = new ReentrantLock();
+    private final @Nullable ScheduledExecutorService retryExecutor;
+
+    // Everything below is guarded by the object monitor.
+    /** The stored copies are never modified in place, so a shallow copy of this list is a snapshot. */
     private final List<SessionData> sessions = new ArrayList<>();
-    /** Ids saved here that no successful write has carried to disk yet; they outrank the disk copy. */
-    private final Set<String> dirtyIds = new HashSet<>();
-    /** Ids deleted here that no successful write has removed from disk yet. */
-    private final Set<String> deletedIds = new HashSet<>();
+    /** Ids saved here that no successful write has carried to disk yet, with the change that staged them. */
+    private final Map<String, Long> dirtyIds = new HashMap<>();
+    /** Ids deleted here that no successful write has removed from disk yet, with the deleting change. */
+    private final Map<String, Long> deletedIds = new HashMap<>();
+    /** Numbers every staged save and delete. */
+    private long changeCount;
+    /** Counts successful writes, so a reload that raced one throws its older read away. */
+    private long writeCount;
     private boolean loaded;
-    /** Disk state we last saw, so unchanged files aren't re-parsed before each write. */
+    /** Disk state we last saw, so unchanged files aren't re-parsed on every focus change. */
     private @Nullable FileTime lastSyncedTime;
     private long lastSyncedSize = -1L;
     /** The file exists but could not be parsed the last time it was read. */
     private boolean diskCorrupt;
     private @Nullable Consumer<WriteFailure> writeFailureCallback;
-    private final @Nullable ScheduledExecutorService retryExecutor;
     /** The queued background write: an immediate one for {@link #saveSessionLater}, or a retry. */
     private @Nullable ScheduledFuture<?> pendingWrite;
     /** Bumped whenever the queued write is scheduled or dropped, so a superseded task stands down. */
@@ -101,9 +123,16 @@ public final class SessionStore implements AutoCloseable {
     private long retryDelayMillis = RETRY_DELAY_MILLIS;
     private int consecutiveLockFailures;
     private long closeLockWaitMillis = CLOSE_LOCK_WAIT_MILLIS;
-    /** Callers of {@link #saveSessionLater} waiting for the next write attempt. */
-    private final List<CompletableFuture<Boolean>> pendingResults = new ArrayList<>();
+    /** Callers of {@link #saveSessionLater} waiting for the write that carries their change. */
+    private final List<PendingResult> pendingResults = new ArrayList<>();
     private boolean closed;
+
+    private record PendingResult(long change, CompletableFuture<Boolean> future) {
+    }
+
+    /** What one look at the file found; {@code sessions} is null when there is no readable history. */
+    private record DiskRead(@Nullable FileTime time, long size, @Nullable List<SessionData> sessions, boolean corrupt) {
+    }
 
     public SessionStore(Path file) {
         this(file, null);
@@ -149,85 +178,92 @@ public final class SessionStore implements AutoCloseable {
     }
 
     /** Returns whether the session reached disk; on false it is kept in memory and retried with the next write. */
-    public synchronized boolean saveSession(SessionData session) {
-        ensureLoaded();
-        putInMemory(session);
+    public boolean saveSession(SessionData session) {
+        synchronized (this) {
+            ensureLoaded();
+            putInMemory(session);
+        }
         return write(0L);
     }
 
     /**
      * Takes the session into memory at once and writes it on the executor, so
      * a periodic autosave never makes the caller wait for disk. The future
-     * says whether that write reached disk; it completes with false straight
-     * away while a retry is already scheduled, which will carry this change
-     * too. Without an executor the write happens before this returns.
+     * says whether the write that carries it reached disk; it completes with
+     * false straight away while a retry is already scheduled, which will carry
+     * this change too. Without an executor the write happens before this returns.
      */
-    public synchronized CompletableFuture<Boolean> saveSessionLater(SessionData session) {
-        ensureLoaded();
-        putInMemory(session);
-        if (retryExecutor == null || closed) {
-            return CompletableFuture.completedFuture(write(0L));
+    public CompletableFuture<Boolean> saveSessionLater(SessionData session) {
+        synchronized (this) {
+            ensureLoaded();
+            long change = putInMemory(session);
+            if (retryExecutor != null && !closed) {
+                if (pendingWrite != null && pendingWrite.getDelay(TimeUnit.MILLISECONDS) > 0) {
+                    return CompletableFuture.completedFuture(false);
+                }
+                CompletableFuture<Boolean> result = new CompletableFuture<>();
+                pendingResults.add(new PendingResult(change, result));
+                if (pendingWrite == null) {
+                    scheduleWrite(0L);
+                }
+                return result;
+            }
         }
-        if (pendingWrite != null && pendingWrite.getDelay(TimeUnit.MILLISECONDS) > 0) {
-            return CompletableFuture.completedFuture(false);
-        }
-        CompletableFuture<Boolean> result = new CompletableFuture<>();
-        pendingResults.add(result);
-        if (pendingWrite == null) {
-            scheduleWrite(0L);
-        }
-        return result;
+        return CompletableFuture.completedFuture(write(0L));
     }
 
     /**
      * Bulk save with a single file write. Imports go through this: saving each
      * of N rows individually would rewrite the whole file N times.
      */
-    public synchronized boolean saveSessions(List<SessionData> toSave) {
+    public boolean saveSessions(List<SessionData> toSave) {
         if (toSave.isEmpty()) {
             return true;
         }
-        ensureLoaded();
-        for (SessionData session : toSave) {
-            putInMemory(session);
+        synchronized (this) {
+            ensureLoaded();
+            for (SessionData session : toSave) {
+                putInMemory(session);
+            }
         }
         return write(0L);
     }
 
-    private void putInMemory(SessionData session) {
+    /** Stages a save and returns its change number. Caller holds the monitor. */
+    private long putInMemory(SessionData session) {
         // Sanitized here, at the one entrance to the file: a NaN that slipped
         // past the UI would otherwise make Gson refuse every write from now on.
         SessionData copy = session.copy().sanitize();
+        long change = ++changeCount;
         deletedIds.remove(copy.id);
-        dirtyIds.add(copy.id);
+        dirtyIds.put(copy.id, change);
         int index = indexOf(copy.id);
         if (index >= 0) {
             sessions.set(index, copy);
         } else {
             sessions.add(copy);
         }
+        return change;
     }
 
-    public synchronized boolean deleteSession(String id) {
-        ensureLoaded();
-        int index = indexOf(id);
-        if (index >= 0) {
-            sessions.remove(index);
-        }
-        dirtyIds.remove(id);
-        deletedIds.add(id);
-        return write(0L);
+    public boolean deleteSession(String id) {
+        return deleteSessions(List.of(id));
     }
 
     /** Bulk delete with a single file write (used by "delete older than" cleanup). */
-    public synchronized boolean deleteSessions(Collection<String> ids) {
+    public boolean deleteSessions(Collection<String> ids) {
         if (ids.isEmpty()) {
             return true;
         }
-        ensureLoaded();
-        sessions.removeIf(session -> ids.contains(session.id));
-        dirtyIds.removeAll(ids);
-        deletedIds.addAll(ids);
+        synchronized (this) {
+            ensureLoaded();
+            sessions.removeIf(session -> ids.contains(session.id));
+            long change = ++changeCount;
+            for (String id : ids) {
+                dirtyIds.remove(id);
+                deletedIds.put(id, change);
+            }
+        }
         return write(0L);
     }
 
@@ -239,14 +275,25 @@ public final class SessionStore implements AutoCloseable {
      * matters because this runs on every IDE focus change. Returns whether
      * the file had changed.
      */
-    public synchronized boolean reload() {
-        if (!loaded) {
-            return false; // Nothing cached; the next access reads the file fresh anyway.
+    public boolean reload() {
+        long writesBefore;
+        synchronized (this) {
+            if (!loaded) {
+                return false; // Nothing cached; the next access reads the file fresh anyway.
+            }
+            if (!diskChangedSinceLastSync()) {
+                return false;
+            }
+            writesBefore = writeCount;
         }
-        if (!diskChangedSinceLastSync()) {
-            return false;
+        DiskRead read = readDisk();
+        synchronized (this) {
+            // A write since the check merged the file itself, and this read
+            // may predate it; folding it in now could only roll memory back.
+            if (writeCount == writesBefore) {
+                applyDiskRead(read);
+            }
         }
-        mergeFromDisk();
         return true;
     }
 
@@ -259,17 +306,19 @@ public final class SessionStore implements AutoCloseable {
      * write actually succeeds - the sessions being already in memory from the
      * first attempt is not the same as being on disk.
      */
-    public synchronized boolean migrate(List<SessionData> legacySessions) {
-        ensureLoaded();
+    public boolean migrate(List<SessionData> legacySessions) {
         boolean pending = false;
-        for (SessionData session : legacySessions) {
-            if (session.id == null || session.id.isBlank()) {
-                continue;
+        synchronized (this) {
+            ensureLoaded();
+            for (SessionData session : legacySessions) {
+                if (session.id == null || session.id.isBlank()) {
+                    continue;
+                }
+                if (indexOf(session.id) < 0) {
+                    putInMemory(session);
+                }
+                pending |= dirtyIds.containsKey(session.id);
             }
-            if (indexOf(session.id) < 0) {
-                putInMemory(session);
-            }
-            pending |= dirtyIds.contains(session.id);
         }
         return !pending || write(0L);
     }
@@ -283,57 +332,51 @@ public final class SessionStore implements AutoCloseable {
         return -1;
     }
 
+    /** First access reads the file; the only disk read done while holding the monitor. */
     private void ensureLoaded() {
         if (loaded) {
             return;
         }
         loaded = true;
-        // Record metadata before reading: a concurrent replacement must leave
-        // this snapshot eligible for another refresh, not label old bytes as new.
-        rememberDiskState();
-        List<SessionData> onDisk = readFile();
-        if (onDisk != null) {
-            sessions.addAll(onDisk);
+        DiskRead read = readDisk();
+        lastSyncedTime = read.time();
+        lastSyncedSize = read.size();
+        diskCorrupt = read.corrupt();
+        if (read.sessions() != null) {
+            sessions.addAll(read.sessions());
         }
     }
 
     /**
-     * Folds the file into memory. The disk copy replaces ours for every id
-     * except those changed here since the last successful write; sessions we
-     * knew from disk that are no longer in the file were deleted elsewhere
-     * and go too. A missing or unparseable file changes nothing - reading
-     * "nothing" as "everything was deleted" would turn one bad read into a
-     * wiped history on the next write.
+     * Folds a read of the file into memory. The disk copy replaces ours for
+     * every id except those changed here since the last successful write;
+     * sessions we knew from disk that are no longer in the file were deleted
+     * elsewhere and go too. A missing or unparseable file changes nothing -
+     * reading "nothing" as "everything was deleted" would turn one bad read
+     * into a wiped history on the next write. Caller holds the monitor.
      */
-    private void mergeFromDisk() {
-        rememberDiskState();
-        List<SessionData> onDisk = readFile();
-        if (onDisk != null) {
-            Set<String> diskIds = new HashSet<>();
-            for (SessionData session : onDisk) {
-                diskIds.add(session.id);
-                if (deletedIds.contains(session.id) || dirtyIds.contains(session.id)) {
-                    continue;
-                }
-                int index = indexOf(session.id);
-                if (index >= 0) {
-                    sessions.set(index, session);
-                } else {
-                    sessions.add(session);
-                }
+    private void applyDiskRead(DiskRead read) {
+        lastSyncedTime = read.time();
+        lastSyncedSize = read.size();
+        diskCorrupt = read.corrupt();
+        List<SessionData> onDisk = read.sessions();
+        if (onDisk == null) {
+            return;
+        }
+        Set<String> diskIds = new HashSet<>();
+        for (SessionData session : onDisk) {
+            diskIds.add(session.id);
+            if (deletedIds.containsKey(session.id) || dirtyIds.containsKey(session.id)) {
+                continue;
             }
-            sessions.removeIf(session -> !diskIds.contains(session.id) && !dirtyIds.contains(session.id));
+            int index = indexOf(session.id);
+            if (index >= 0) {
+                sessions.set(index, session);
+            } else {
+                sessions.add(session);
+            }
         }
-    }
-
-    private void rememberDiskState() {
-        try {
-            lastSyncedTime = Files.getLastModifiedTime(file);
-            lastSyncedSize = Files.size(file);
-        } catch (IOException ignored) {
-            lastSyncedTime = null;
-            lastSyncedSize = -1L;
-        }
+        sessions.removeIf(session -> !diskIds.contains(session.id) && !dirtyIds.containsKey(session.id));
     }
 
     /** True when the file on disk differs from the state this store last read or wrote. */
@@ -347,24 +390,29 @@ public final class SessionStore implements AutoCloseable {
     }
 
     /**
-     * The sessions in the file, or null when there is no readable history:
-     * the file is missing, unreadable, or not valid JSON. Duplicate ids
-     * collapse to the last occurrence, so a hand-merged file cannot leave two
-     * rows fighting over one id forever.
+     * Reads the file without touching this store's state. Metadata comes
+     * first: a replacement during the read must leave this snapshot eligible
+     * for another refresh, not label old bytes as new. Duplicate ids collapse
+     * to the last occurrence, so a hand-merged file cannot leave two rows
+     * fighting over one id forever.
      */
-    private @Nullable List<SessionData> readFile() {
+    private DiskRead readDisk() {
+        FileTime time;
+        long size;
+        try {
+            time = Files.getLastModifiedTime(file);
+            size = Files.size(file);
+        } catch (IOException missing) {
+            time = null;
+            size = -1L;
+        }
         if (!Files.exists(file)) {
-            diskCorrupt = false;
-            return null;
+            return new DiskRead(time, size, null, false);
         }
         try {
-            String json = Files.readString(file);
-            Type listType = new TypeToken<List<SessionData>>() {
-            }.getType();
-            List<SessionData> read = gson.fromJson(json, listType);
-            diskCorrupt = false;
+            List<SessionData> read = gson.fromJson(Files.readString(file), SESSION_LIST);
             if (read == null) {
-                return List.of();
+                return new DiskRead(time, size, List.of(), false);
             }
             Map<String, SessionData> byId = new LinkedHashMap<>();
             for (SessionData session : read) {
@@ -372,54 +420,104 @@ public final class SessionStore implements AutoCloseable {
                     byId.put(session.id, session.sanitize());
                 }
             }
-            return new ArrayList<>(byId.values());
+            return new DiskRead(time, size, new ArrayList<>(byId.values()), false);
         } catch (IOException | JsonSyntaxException exception) {
             // A corrupt or unreadable file must not take the plugin down; keep
             // working from memory, and keep the file - see preserveCorruptFile.
             LOG.warn("Could not read " + file + "; continuing with in-memory sessions", exception);
-            diskCorrupt = true;
-            return null;
+            return new DiskRead(time, size, null, true);
         }
     }
 
-    /** One write attempt, waiting up to {@code lockWaitMillis} for another writer's lock (0: not at all). */
+    /** One write attempt, waiting up to {@code lockWaitMillis} for another IDE's lock (0: not at all). */
     private boolean write(long lockWaitMillis) {
+        writeLock.lock();
+        try {
+            return writeHoldingWriteLock(lockWaitMillis);
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    private boolean writeHoldingWriteLock(long lockWaitMillis) {
+        List<PendingResult> carried = null;
+        synchronized (this) {
+            if (dirtyIds.isEmpty() && deletedIds.isEmpty()) {
+                // An earlier write already carried everything, this caller's change included.
+                carried = takeResultsUpTo(Long.MAX_VALUE);
+            }
+        }
+        if (carried != null) {
+            complete(carried, true);
+            return true;
+        }
         try {
             Files.createDirectories(file.getParent());
             try (ProcessLock ignored = acquireLock(lockWaitMillis)) {
                 // A cached timestamp/size cannot prove our bytes are current:
                 // another writer can replace the file during an unlocked read,
                 // or replace it with the same size on a coarse filesystem clock.
-                mergeFromDisk();
-                if (diskCorrupt) {
+                DiskRead read = readDisk();
+                List<SessionData> snapshot;
+                Map<String, Long> writtenDirty;
+                Map<String, Long> writtenDeleted;
+                long writtenChange;
+                boolean corrupt;
+                synchronized (this) {
+                    applyDiskRead(read);
+                    corrupt = diskCorrupt;
+                    snapshot = new ArrayList<>(sessions);
+                    writtenDirty = new HashMap<>(dirtyIds);
+                    writtenDeleted = new HashMap<>(deletedIds);
+                    writtenChange = changeCount;
+                }
+                if (corrupt) {
                     preserveCorruptFile();
                 }
                 Path temp = stagingFile();
                 try {
-                    Files.writeString(temp, gson.toJson(sessions));
+                    Files.writeString(temp, gson.toJson(snapshot));
                     moveIntoPlace(temp);
                 } finally {
                     discardQuietly(temp);
                 }
-                rememberDiskState();
+                FileTime writtenTime = lastModified();
+                long writtenSize = sizeOrMinusOne();
+                synchronized (this) {
+                    lastSyncedTime = writtenTime;
+                    lastSyncedSize = writtenSize;
+                    // Only what this write carried is on disk now; a change
+                    // staged while it ran keeps its newer number and stays pending.
+                    writtenDirty.forEach(dirtyIds::remove);
+                    writtenDeleted.forEach(deletedIds::remove);
+                    diskCorrupt = false;
+                    writeCount++;
+                    retryDelayMillis = RETRY_DELAY_MILLIS;
+                    consecutiveLockFailures = 0;
+                    carried = takeResultsUpTo(writtenChange);
+                    if (dirtyIds.isEmpty() && deletedIds.isEmpty()) {
+                        cancelPendingWrite();
+                    } else {
+                        scheduleFollowUp();
+                    }
+                }
             }
-            dirtyIds.clear();
-            deletedIds.clear();
-            diskCorrupt = false;
-            retryDelayMillis = RETRY_DELAY_MILLIS;
-            consecutiveLockFailures = 0;
-            cancelPendingWrite();
-            completePendingResults(true);
+            complete(carried, true);
             return true;
         } catch (LockUnavailableException busy) {
             // Usually another IDE in the middle of its own few-millisecond
-            // write; the retry below picks the changes up a second later.
+            // write; the retry picks the changes up a second later.
             LOG.info("History lock unavailable; retrying: " + busy.getMessage());
-            scheduleRetry();
-            if (++consecutiveLockFailures == LOCK_FAILURES_BEFORE_WARNING) {
+            boolean warn;
+            synchronized (this) {
+                scheduleRetry();
+                warn = ++consecutiveLockFailures == LOCK_FAILURES_BEFORE_WARNING;
+                carried = takeResultsUpTo(Long.MAX_VALUE);
+            }
+            if (warn) {
                 reportFailure(WriteFailure.LOCK_BUSY);
             }
-            completePendingResults(false);
+            complete(carried, false);
             return false;
         } catch (IOException exception) {
             // Sessions stay in memory and the next successful write persists
@@ -427,24 +525,62 @@ public final class SessionStore implements AutoCloseable {
             // the IDE closes, then everything since the failure is gone" is
             // the worst possible way to find out.
             LOG.warn("Could not write " + file + "; sessions are only in memory", exception);
-            scheduleRetry();
+            synchronized (this) {
+                scheduleRetry();
+                carried = takeResultsUpTo(Long.MAX_VALUE);
+            }
             reportFailure(WriteFailure.IO_ERROR);
-            completePendingResults(false);
+            complete(carried, false);
             return false;
         }
     }
 
-    private void reportFailure(WriteFailure failure) {
-        if (writeFailureCallback != null) {
-            writeFailureCallback.accept(failure);
+    private @Nullable FileTime lastModified() {
+        try {
+            return Files.getLastModifiedTime(file);
+        } catch (IOException gone) {
+            return null;
         }
     }
 
-    private void completePendingResults(boolean persisted) {
-        List<CompletableFuture<Boolean>> waiting = List.copyOf(pendingResults);
-        pendingResults.clear();
-        for (CompletableFuture<Boolean> result : waiting) {
-            result.complete(persisted);
+    private long sizeOrMinusOne() {
+        try {
+            return Files.size(file);
+        } catch (IOException gone) {
+            return -1L;
+        }
+    }
+
+    private void reportFailure(WriteFailure failure) {
+        Consumer<WriteFailure> callback;
+        synchronized (this) {
+            callback = writeFailureCallback;
+        }
+        if (callback != null) {
+            callback.accept(failure);
+        }
+    }
+
+    /**
+     * Removes the waiting callers whose change is at most {@code change}.
+     * Caller holds the monitor, and completes them after releasing it, so
+     * their callbacks never run under it.
+     */
+    private List<PendingResult> takeResultsUpTo(long change) {
+        List<PendingResult> taken = new ArrayList<>();
+        for (Iterator<PendingResult> it = pendingResults.iterator(); it.hasNext(); ) {
+            PendingResult result = it.next();
+            if (result.change() <= change) {
+                taken.add(result);
+                it.remove();
+            }
+        }
+        return taken;
+    }
+
+    private static void complete(List<PendingResult> results, boolean persisted) {
+        for (PendingResult result : results) {
+            result.future().complete(persisted);
         }
     }
 
@@ -493,10 +629,11 @@ public final class SessionStore implements AutoCloseable {
     }
 
     /** Retries all pending saves and deletions, including changes to a session no longer on the clock. */
-    public synchronized boolean flushPendingWrites() {
-        return dirtyIds.isEmpty() && deletedIds.isEmpty() || write(0L);
+    public boolean flushPendingWrites() {
+        return write(0L);
     }
 
+    /** Caller holds the monitor. */
     private void scheduleRetry() {
         if (retryExecutor == null || closed || pendingWrite != null) {
             return;
@@ -505,11 +642,26 @@ public final class SessionStore implements AutoCloseable {
         retryDelayMillis = Math.min(60_000L, retryDelayMillis * 2);
     }
 
+    /** Changes staged during a successful write go out right after it. Caller holds the monitor. */
+    private void scheduleFollowUp() {
+        if (retryExecutor == null || closed) {
+            return;
+        }
+        if (pendingWrite != null && pendingWrite.getDelay(TimeUnit.MILLISECONDS) > 0) {
+            cancelPendingWrite();
+        }
+        if (pendingWrite == null) {
+            scheduleWrite(0L);
+        }
+    }
+
+    /** Caller holds the monitor. */
     private void scheduleWrite(long delayMillis) {
         long generation = ++writeGeneration;
         pendingWrite = retryExecutor.schedule(() -> writeInBackground(generation), delayMillis, TimeUnit.MILLISECONDS);
     }
 
+    /** Caller holds the monitor. */
     private void cancelPendingWrite() {
         writeGeneration++;
         if (pendingWrite != null) {
@@ -518,27 +670,37 @@ public final class SessionStore implements AutoCloseable {
         }
     }
 
-    private synchronized void writeInBackground(long generation) {
-        // A task that already started can't be cancelled; it may have waited
-        // for this lock while another write did its job or took its place.
-        if (generation != writeGeneration || closed) {
-            return;
+    private void writeInBackground(long generation) {
+        synchronized (this) {
+            // A task that already started can't be cancelled; another write may
+            // have done its job or taken its place while it waited.
+            if (generation != writeGeneration || closed) {
+                return;
+            }
+            pendingWrite = null;
         }
-        pendingWrite = null;
-        completePendingResults(flushPendingWrites());
+        write(0L);
     }
 
     @Override
-    public synchronized void close() {
-        if (closed) {
-            return;
+    public void close() {
+        long waitMillis;
+        synchronized (this) {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            cancelPendingWrite();
+            waitMillis = closeLockWaitMillis;
         }
-        closed = true;
-        cancelPendingWrite();
         // The last chance for pending changes: give a writer in another IDE
         // a moment to finish instead of dropping them at the first try.
-        boolean persisted = dirtyIds.isEmpty() && deletedIds.isEmpty() || write(closeLockWaitMillis);
-        completePendingResults(persisted);
+        boolean persisted = write(waitMillis);
+        List<PendingResult> rest;
+        synchronized (this) {
+            rest = takeResultsUpTo(Long.MAX_VALUE);
+        }
+        complete(rest, persisted);
         if (retryExecutor != null) {
             retryExecutor.shutdownNow();
         }

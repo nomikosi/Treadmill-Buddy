@@ -17,6 +17,7 @@ import com.intellij.openapi.actionSystem.ToggleAction;
 import com.intellij.openapi.project.DumbAware;
 import com.intellij.openapi.project.DumbAwareAction;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.InputValidatorEx;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.util.text.StringUtil;
 import com.intellij.ui.CollectionListModel;
@@ -38,6 +39,7 @@ import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -249,29 +251,19 @@ public final class SavedSessionsPanel {
     private void deleteOldSessions() {
         String input = Messages.showInputDialog(project,
                 TreadmillBundle.message("sessions.deleteOld.prompt"),
-                TreadmillBundle.message("sessions.deleteOld.title"), null, "365", null);
+                TreadmillBundle.message("sessions.deleteOld.title"), null, "365", DAYS_VALIDATOR);
         if (input == null) {
             return;
         }
-        int days;
-        try {
-            days = Integer.parseInt(input.trim());
-        } catch (NumberFormatException ignored) {
-            return;
-        }
-        if (days <= 0) {
-            return;
-        }
-        long cutoffMillis = java.time.LocalDate.now().minusDays(days).atStartOfDay(ZoneId.systemDefault())
+        int days = (int) NumericInput.parseWholeNumber(input);
+        long cutoffMillis = LocalDate.now().minusDays(days).atStartOfDay(ZoneId.systemDefault())
                 .toInstant().toEpochMilli();
         engine.reloadSessions();
         SessionData current = engine.getSession();
         List<String> oldIds = HistoryCleanup.candidates(settings.getSessions(),
                 current == null ? null : current.id, cutoffMillis);
         if (oldIds.isEmpty()) {
-            Messages.showInfoMessage(project,
-                    TreadmillBundle.message("sessions.deleteOld.none", days),
-                    TreadmillBundle.message("sessions.deleteOld.title"));
+            showNothingToDelete(days);
             return;
         }
         int answer = Messages.showYesNoDialog(project,
@@ -287,12 +279,41 @@ public final class SavedSessionsPanel {
         List<String> stillOld = HistoryCleanup.candidates(settings.getSessions(),
                 current == null ? null : current.id, cutoffMillis);
         oldIds = oldIds.stream().filter(stillOld::contains).toList();
+        if (oldIds.isEmpty()) {
+            showNothingToDelete(days);
+            return;
+        }
         WorkoutEngine.Deletion deletion = engine.deleteSessions(oldIds);
-        TreadmillNotifications.info(project,
-                TreadmillBundle.message("notification.title"),
+        TreadmillNotifications.withUndo(project,
                 TreadmillBundle.message(deletion.persisted() ? "notification.sessions.deletedOld"
-                        : "notification.sessions.deleteFailed", oldIds.size(), days));
+                        : "notification.sessions.deleteFailed", oldIds.size(), days),
+                () -> engine.undoDeletion(deletion));
     }
+
+    private void showNothingToDelete(int days) {
+        Messages.showInfoMessage(project,
+                TreadmillBundle.message("sessions.deleteOld.none", days),
+                TreadmillBundle.message("sessions.deleteOld.title"));
+    }
+
+    /** A whole number of days; the dialog explains a bad value instead of the action silently doing nothing. */
+    static final InputValidatorEx DAYS_VALIDATOR = new InputValidatorEx() {
+        @Override
+        public boolean checkInput(@Nullable String inputString) {
+            return getErrorText(inputString) == null;
+        }
+
+        @Override
+        public boolean canClose(@Nullable String inputString) {
+            return checkInput(inputString);
+        }
+
+        @Override
+        public @Nullable String getErrorText(@Nullable String inputString) {
+            long days = inputString == null ? -1 : NumericInput.parseWholeNumber(inputString);
+            return days >= 1 && days <= 100_000 ? null : TreadmillBundle.message("sessions.deleteOld.invalid");
+        }
+    };
 
     private String describeSession(SessionData session) {
         UnitSystem currentUnits = units.get();

@@ -9,7 +9,11 @@ import com.codex.desktreadmill.model.SpeedSegment;
 import com.codex.desktreadmill.model.UserProfile;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -84,6 +88,71 @@ class SessionTransferTest {
         assertEquals(SessionMode.INTERVAL.name(), parsed.get(1).modeId);
         assertEquals(CalorieAlgorithm.DISTANCE_COST.name(), parsed.get(1).algorithmId);
         assertEquals(CalorieAlgorithm.ACSM_FLAT.name(), parsed.get(2).algorithmId);
+    }
+
+    @Test
+    void anExportReSavedByGermanExcelImports() {
+        // Semicolons, decimal commas, a day.month.year date, WAHR for true,
+        // a scientific-notation id, Windows-1252 bytes, and a padding row.
+        String excel = "name;mode;algorithm;created;speed_kmh;elapsed_seconds;distance_km;steps;calories;completed;id\r\n"
+                + "Spaziergang über Mittag;MARATHON;ACSM_FLAT;25.09.2026 10:00;4,5;1800;2,25;3200;150,4;WAHR;1,72725E+12\r\n"
+                + ";;;;;;;;;;\r\n";
+        SessionCsvCodec.CsvRead read = SessionCsvCodec.read(
+                SessionCsvCodec.decode(excel.getBytes(Charset.forName("windows-1252"))));
+
+        assertEquals(0, read.skippedRows(), String.valueOf(read.firstProblem()));
+        assertEquals(1, read.sessions().size(), "the padding row is ignored, not counted");
+        SessionData walk = read.sessions().getFirst();
+        assertEquals("Spaziergang über Mittag", walk.name);
+        assertEquals(4.5, walk.speedKmh, 0.0);
+        assertEquals(2.25, walk.distanceKm, 0.0);
+        assertEquals(150.4, walk.calories, 0.0);
+        assertTrue(walk.completed, "WAHR is German Excel's TRUE");
+        assertEquals(LocalDateTime.of(2026, 9, 25, 10, 0),
+                LocalDateTime.ofInstant(Instant.ofEpochMilli(walk.createdMillis), ZoneId.systemDefault()));
+        assertTrue(walk.id.isBlank(), "an id shown as 1,72725E+12 identifies nothing; match by minute and name");
+    }
+
+    @Test
+    void unreadableRowsAreCountedWithTheFirstProblem() {
+        String csv = "name,elapsed_seconds,speed_kmh\nGood,600,4.5\nBad,abc,4.5\nWorse,60,fast\n";
+        SessionCsvCodec.CsvRead read = SessionCsvCodec.read(csv);
+        assertEquals(1, read.sessions().size());
+        assertEquals(2, read.skippedRows());
+        assertEquals("row 3: elapsed_seconds 'abc'", read.firstProblem());
+    }
+
+    @Test
+    void utf8StaysUtf8AndAnythingElseIsReadAsWindows1252() {
+        String text = "name\nSpaziergang über Mittag\n";
+        assertEquals(text, SessionCsvCodec.decode(text.getBytes(StandardCharsets.UTF_8)));
+        assertEquals(text, SessionCsvCodec.decode(text.getBytes(Charset.forName("windows-1252"))));
+    }
+
+    @Test
+    void aCsvThatIsNotAnExportIsRejectedAsSuch() {
+        assertThrows(SessionCsvCodec.NotAnExportException.class,
+                () -> SessionCsvCodec.read("Date,Amount\n2026-09-25,12.50\n"));
+    }
+
+    @Test
+    void slashDatesFollowTheRegionalOrderExcelUsed() {
+        Locale original = Locale.getDefault();
+        try {
+            Locale.setDefault(Locale.US);
+            assertEquals(LocalDateTime.of(2026, 9, 5, 10, 0), createdOf("9/5/2026 10:00"));
+            assertEquals(LocalDateTime.of(2026, 9, 5, 22, 30), createdOf("9/5/2026 10:30 PM"));
+            Locale.setDefault(Locale.UK);
+            assertEquals(LocalDateTime.of(2026, 5, 9, 10, 0), createdOf("9/5/2026 10:00"));
+        } finally {
+            Locale.setDefault(original);
+        }
+    }
+
+    private static LocalDateTime createdOf(String created) {
+        SessionData walk = SessionCsvCodec.read("name,elapsed_seconds,created\nWalk,60,\"" + created + "\"\n")
+                .sessions().getFirst();
+        return LocalDateTime.ofInstant(Instant.ofEpochMilli(walk.createdMillis), ZoneId.systemDefault());
     }
 
     @Test

@@ -145,6 +145,39 @@ class WorkoutFeedbackTest {
         assertEquals(1, announced.size(), "never while a session runs");
     }
 
+    @Test
+    void noRemindersPileUpWhileNobodyIsAtTheKeyboard() {
+        settings.setMoveReminderMinutes(60);
+        for (int hour = 1; hour <= 8; hour++) {
+            now += 3_600_000L;
+            engine.checkMoveReminder();
+        }
+        assertTrue(announced.isEmpty(), "eight hours away, not eight reminders in the log");
+
+        engine.noteUserActivity(); // Back at the desk.
+        engine.checkMoveReminder();
+        assertTrue(announced.isEmpty(), "the time away was not time sitting");
+        for (int minute = 1; minute <= 61; minute++) {
+            now += 60_000L;
+            engine.noteUserActivity();
+            engine.checkMoveReminder();
+        }
+        assertEquals(List.of("move 60"), announced, "an hour back at the keyboard earns one reminder");
+    }
+
+    @Test
+    void aShortPauseAtTheKeyboardDoesNotRestartTheCount() {
+        settings.setMoveReminderMinutes(30);
+        for (int minute = 1; minute <= 30; minute++) {
+            now += 60_000L;
+            if (minute % 8 != 0) { // A few quiet minutes reading, well under the absence threshold.
+                engine.noteUserActivity();
+            }
+            engine.checkMoveReminder();
+        }
+        assertEquals(List.of("move 30"), announced);
+    }
+
     private final class RecordingFeedback implements WorkoutFeedback {
         @Override
         public void intervalBlockStarted(boolean walking, long minutes) {
