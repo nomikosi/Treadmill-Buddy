@@ -4,6 +4,20 @@ The build renders the section for the version it builds into the plugin's change
 
 ## [Unreleased]
 
+## [1.3.0]
+
+- New leaves the clock empty: opening the tool window afterwards, in any project or after a restart, no longer loads the previous walk back, and the form offers a fresh name instead of the old one.
+- Undo after Reset restores the walk even when the clock was started again in the meantime.
+- The settings page is under Settings | Tools | Treadmill Buddy, as documented, instead of Other Settings, and Settings search finds its individual options.
+- Number fields read thousands separators where they cannot be misread, so a 10,000-step goal is no longer saved as 10 steps. An ambiguous decimal such as 1,500 is flagged with both readings.
+- Another IDE briefly holding the history lock no longer triggers the disk-failure warning: saves retry quietly, closing the IDE waits a moment for the lock, and a separate warning appears only when the lock stays busy.
+- The 30-second autosave writes the history file on a background thread instead of the UI thread, and reading the history no longer waits for a write in progress.
+- Move reminders count only time at the keyboard: after 10 minutes without input no reminders arrive, so they no longer pile up in the notification log overnight.
+- CSV exports re-saved in Excel import again: semicolon separators, decimal commas, localized dates and booleans, Windows-1252 text, and ids rewritten in scientific notation are read, and rows that can't be read are counted in the import message.
+- Deleting old sessions in bulk can be undone from the notification, the dialog rejects a day count it cannot use, and it no longer reports deleting zero sessions.
+- CSV exports write modes and algorithms as stable ids; exports with the older English labels still import.
+- Screen readers can read the workout clock and find the 14-day chart and the activity heatmap, and the floating clock's close button is labelled.
+
 ## [1.2.0]
 
 - Paused Save and Resume keep newer progress saved by another IDE and merge only fields edited locally, including speed, name, and targets. Completed or deleted sessions are not restarted by stale forms.
@@ -16,17 +30,6 @@ The build renders the section for the version it builds into the plugin's change
 - Profile measurements, speed, and goals preserve their exact metric values across unit changes. Editable numbers work across locales, and small positive goals use enough decimal places to stay valid.
 - CSV import supports quoted names containing commas, quotes, and line breaks, and rejects malformed quoting before saving any rows. TCX exports with incomplete speed histories distribute distance across the full workout.
 - History cleanup uses the most recent recorded activity and protects the session currently on the clock, including while paused.
-- New leaves the clock empty: opening the tool window afterwards, in any project or after a restart, no longer loads the previous walk back, and the form offers a fresh name instead of the old one.
-- Undo after Reset restores the walk even when the clock was started again in the meantime.
-- The settings page is under Settings | Tools | Treadmill Buddy, as documented, instead of Other Settings, and Settings search finds its individual options.
-- Number fields read thousands separators where they cannot be misread, so a 10,000-step goal is no longer saved as 10 steps. An ambiguous decimal such as 1,500 is flagged with both readings.
-- Another IDE briefly holding the history lock no longer triggers the disk-failure warning: saves retry quietly, closing the IDE waits a moment for the lock, and a separate warning appears only when the lock stays busy.
-- The 30-second autosave writes the history file on a background thread instead of the UI thread, and reading the history no longer waits for a write in progress.
-- Move reminders count only time at the keyboard: after 10 minutes without input no reminders arrive, so they no longer pile up in the notification log overnight.
-- CSV exports re-saved in Excel import again: semicolon separators, decimal commas, localized dates and booleans, Windows-1252 text, and ids rewritten in scientific notation are read, and rows that can't be read are counted in the import message.
-- Deleting old sessions in bulk can be undone from the notification, the dialog rejects a day count it cannot use, and it no longer reports deleting zero sessions.
-- CSV exports write modes and algorithms as stable ids; exports with the older English labels still import.
-- Screen readers can read the workout clock and find the 14-day chart and the activity heatmap, and the floating clock's close button is labelled.
 
 ## [1.1.1]
 
