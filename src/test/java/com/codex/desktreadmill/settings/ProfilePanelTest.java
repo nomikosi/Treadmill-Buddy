@@ -6,6 +6,9 @@ import com.intellij.openapi.ui.ComboBox;
 import com.intellij.ui.components.JBTextField;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import javax.swing.SwingUtilities;
 import java.lang.reflect.Field;
@@ -193,6 +196,39 @@ class ProfilePanelTest {
             assertNull(panel.validateInput());
             text(panel, "weightField").setText("72,500");
             assertTrue(panel.validateInput().contains("72500"), "weights are checked too");
+        });
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"-1", "-2147483649", "-4294967296", "-4294967295", "-4,294,967,296",
+            "2147483648", "4294967296"})
+    void wholeNumberSettingsRejectNegativeAndOverflowingValues(String value) throws Exception {
+        onEdt(() -> {
+            ProfilePanel panel = panel(settings(UnitSystem.METRIC));
+            for (String name : new String[]{"autoPauseField", "moveReminderField",
+                    "streakRestDaysField", "streakRiskHourField"}) {
+                JBTextField input = text(panel, name);
+                String original = input.getText();
+                input.setText(value);
+                assertNotNull(panel.validateInput(), name + " must reject " + value);
+                input.setText(original);
+            }
+        });
+    }
+
+    @ParameterizedTest
+    @CsvSource({"autoPauseField, 240", "moveReminderField, 480", "streakRestDaysField, 6",
+            "streakRiskHourField, 23"})
+    void wholeNumberSettingsAcceptTheirBoundaries(String name, int maximum) throws Exception {
+        onEdt(() -> {
+            ProfilePanel panel = panel(settings(UnitSystem.METRIC));
+            JBTextField input = text(panel, name);
+            input.setText("0");
+            assertNull(panel.validateInput());
+            input.setText(String.valueOf(maximum));
+            assertNull(panel.validateInput());
+            input.setText(String.valueOf(maximum + 1));
+            assertNotNull(panel.validateInput());
         });
     }
 

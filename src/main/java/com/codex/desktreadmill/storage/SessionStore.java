@@ -107,8 +107,8 @@ public final class SessionStore implements AutoCloseable {
     private final Map<String, Long> deletedIds = new HashMap<>();
     /** Numbers every staged save and delete. */
     private long changeCount;
-    /** Counts successful writes, so a reload that raced one throws its older read away. */
-    private long writeCount;
+    /** Advanced when a disk read is merged or a write finishes, invalidating older reloads. */
+    private long syncRevision;
     private boolean loaded;
     /** Disk state we last saw, so unchanged files aren't re-parsed on every focus change. */
     private @Nullable FileTime lastSyncedTime;
@@ -276,7 +276,7 @@ public final class SessionStore implements AutoCloseable {
      * the file had changed.
      */
     public boolean reload() {
-        long writesBefore;
+        long revisionBefore;
         synchronized (this) {
             if (!loaded) {
                 return false; // Nothing cached; the next access reads the file fresh anyway.
@@ -284,13 +284,14 @@ public final class SessionStore implements AutoCloseable {
             if (!diskChangedSinceLastSync()) {
                 return false;
             }
-            writesBefore = writeCount;
+            revisionBefore = syncRevision;
         }
         DiskRead read = readDisk();
         synchronized (this) {
-            // A write since the check merged the file itself, and this read
-            // may predate it; folding it in now could only roll memory back.
-            if (writeCount == writesBefore) {
+            // Another reload or a writer may already have merged a newer file.
+            // Reject this older snapshot even if that writer has not finished
+            // its disk write yet.
+            if (syncRevision == revisionBefore) {
                 applyDiskRead(read);
             }
         }
@@ -356,6 +357,7 @@ public final class SessionStore implements AutoCloseable {
      * into a wiped history on the next write. Caller holds the monitor.
      */
     private void applyDiskRead(DiskRead read) {
+        syncRevision++;
         lastSyncedTime = read.time();
         lastSyncedSize = read.size();
         diskCorrupt = read.corrupt();
@@ -491,7 +493,7 @@ public final class SessionStore implements AutoCloseable {
                     writtenDirty.forEach(dirtyIds::remove);
                     writtenDeleted.forEach(deletedIds::remove);
                     diskCorrupt = false;
-                    writeCount++;
+                    syncRevision++;
                     retryDelayMillis = RETRY_DELAY_MILLIS;
                     consecutiveLockFailures = 0;
                     carried = takeResultsUpTo(writtenChange);

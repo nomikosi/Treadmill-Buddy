@@ -5,9 +5,15 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonDeserializer;
 import com.google.gson.JsonSerializer;
+import com.google.gson.TypeAdapter;
+import com.google.gson.stream.JsonReader;
+import com.google.gson.stream.JsonWriter;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -15,6 +21,8 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -67,6 +75,81 @@ class SessionStoreSnapshotTest {
         assertTrue(reader.reload(), "an old read must not be stamped with the replacement's metadata");
         assertNotNull(reader.findSession("concurrent"));
         assertFalse(reader.reload());
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void olderReloadCannotUndoABackgroundMerge(boolean finishWriteFirst) throws Exception {
+        Path file = directory.resolve("sessions.json");
+        CountDownLatch reading = new CountDownLatch(1);
+        CountDownLatch releaseRead = new CountDownLatch(1);
+        CountDownLatch writing = new CountDownLatch(1);
+        CountDownLatch releaseWrite = new CountDownLatch(1);
+        try (ExecutorService reloadExecutor = Executors.newSingleThreadExecutor();
+             SessionStore otherIde = new SessionStore(file);
+             SessionStore store = new SessionStore(file, new ScheduledThreadPoolExecutor(1))) {
+            try {
+                assertTrue(otherIde.saveSessions(List.of(walk("extended", 60), walk("removed", 60))));
+                store.getSessions();
+                assertTrue(otherIde.saveSessions(List.of(walk("extended", 90), walk("trigger", 60))));
+                stallNextReadAndWrite(store, reading, releaseRead, writing, releaseWrite);
+                CompletableFuture<Boolean> reloaded = CompletableFuture.supplyAsync(store::reload, reloadExecutor);
+                assertTrue(reading.await(5, TimeUnit.SECONDS), "reload captured the older file");
+
+                assertTrue(otherIde.deleteSession("removed"));
+                assertTrue(otherIde.saveSessions(List.of(walk("extended", 600), walk("new", 60))));
+                CompletableFuture<Boolean> written = store.saveSessionLater(walk("local", 60));
+                assertTrue(writing.await(5, TimeUnit.SECONDS), "the writer merged the newer file");
+                assertEquals(600, store.findSession("extended").elapsedSeconds);
+                if (finishWriteFirst) {
+                    releaseWrite.countDown();
+                    assertTrue(written.get(5, TimeUnit.SECONDS));
+                }
+
+                releaseRead.countDown();
+                assertTrue(reloaded.get(5, TimeUnit.SECONDS), "reload must not wait for the writer");
+                assertEquals(600, store.findSession("extended").elapsedSeconds);
+                assertNotNull(store.findSession("new"));
+                assertNull(store.findSession("removed"));
+                assertNotNull(store.findSession("local"));
+                releaseWrite.countDown();
+                assertTrue(written.get(5, TimeUnit.SECONDS));
+                assertFalse(store.reload());
+
+                // Resuming the cached workout must continue from the newest saved progress.
+                SessionData resumed = store.findSession("extended");
+                resumed.elapsedSeconds++;
+                assertTrue(store.saveSession(resumed));
+                try (SessionStore reopened = new SessionStore(file)) {
+                    assertEquals(601, reopened.findSession("extended").elapsedSeconds);
+                    assertNotNull(reopened.findSession("new"));
+                    assertNull(reopened.findSession("removed"));
+                    assertNotNull(reopened.findSession("local"));
+                }
+            } finally {
+                releaseRead.countDown();
+                releaseWrite.countDown();
+            }
+        }
+    }
+
+    @Test
+    void olderReloadCannotUndoANewerReload() throws Exception {
+        Path file = directory.resolve("sessions.json");
+        try (SessionStore writer = new SessionStore(file); SessionStore reader = new SessionStore(file)) {
+            assertTrue(writer.saveSession(walk("extended", 60)));
+            reader.getSessions();
+            assertTrue(writer.saveSessions(List.of(walk("extended", 90), walk("trigger", 60))));
+            duringNextDecode(reader, () -> {
+                assertTrue(writer.saveSessions(List.of(walk("extended", 600), walk("new", 60))));
+                assertTrue(reader.reload());
+            });
+
+            assertTrue(reader.reload());
+            assertEquals(600, reader.findSession("extended").elapsedSeconds);
+            assertNotNull(reader.findSession("new"));
+            assertFalse(reader.reload());
+        }
     }
 
     @Test
@@ -125,6 +208,43 @@ class SessionStoreSnapshotTest {
             SessionStore onDisk = new SessionStore(file);
             assertNotNull(onDisk.findSession("first"));
             assertNotNull(onDisk.findSession("second"), "the first write must not count the later save as written");
+        }
+    }
+
+    /** Holds an older reload while a background writer reads and snapshots a newer file. */
+    private static void stallNextReadAndWrite(SessionStore store, CountDownLatch reading,
+                                             CountDownLatch releaseRead, CountDownLatch writing,
+                                             CountDownLatch releaseWrite) throws Exception {
+        AtomicBoolean firstRead = new AtomicBoolean(true);
+        AtomicBoolean firstWrite = new AtomicBoolean(true);
+        TypeAdapter<SessionData> delegate = new Gson().getAdapter(SessionData.class);
+        TypeAdapter<SessionData> adapter = new TypeAdapter<>() {
+            @Override
+            public SessionData read(JsonReader in) throws IOException {
+                stallOnce(firstRead, reading, releaseRead);
+                return delegate.read(in);
+            }
+
+            @Override
+            public void write(JsonWriter out, SessionData value) throws IOException {
+                stallOnce(firstWrite, writing, releaseWrite);
+                delegate.write(out, value);
+            }
+        };
+        Field gson = SessionStore.class.getDeclaredField("gson");
+        gson.setAccessible(true);
+        gson.set(store, new GsonBuilder().registerTypeAdapter(SessionData.class, adapter).create());
+    }
+
+    private static void stallOnce(AtomicBoolean pending, CountDownLatch entered, CountDownLatch release) {
+        if (pending.getAndSet(false)) {
+            entered.countDown();
+            try {
+                assertTrue(release.await(10, TimeUnit.SECONDS), "the stalled operation was not released");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
         }
     }
 

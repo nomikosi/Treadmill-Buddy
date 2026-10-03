@@ -371,7 +371,7 @@ public final class ProfilePanel {
 
     private static int parseInt(String text) {
         long value = NumericInput.parseWholeNumber(text);
-        return value > Integer.MAX_VALUE ? -1 : (int) value;
+        return value < 0 || value > Integer.MAX_VALUE ? -1 : (int) value;
     }
 
     static String format(double value) {
