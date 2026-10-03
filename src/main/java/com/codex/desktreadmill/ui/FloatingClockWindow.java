@@ -2,6 +2,7 @@ package com.codex.desktreadmill.ui;
 
 import com.codex.desktreadmill.TreadmillBundle;
 import com.codex.desktreadmill.settings.TreadmillSettings;
+import com.intellij.icons.AllIcons;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.wm.WindowManager;
 import com.intellij.ui.JBColor;
@@ -116,7 +117,11 @@ public final class FloatingClockWindow {
 
         JBLabel title = new JBLabel(TreadmillBundle.message("floating.title"));
         title.setHorizontalAlignment(SwingConstants.LEFT);
-        JButton close = new JButton("x");
+        // An icon with a tooltip and an accessible name, not a bare "x" that a
+        // screen reader announces as the letter.
+        JButton close = new JButton(AllIcons.Actions.Close);
+        close.setToolTipText(TreadmillBundle.message("floating.close"));
+        close.getAccessibleContext().setAccessibleName(TreadmillBundle.message("floating.close"));
         close.setFocusable(false);
         close.addActionListener(event -> closeByUser());
         pauseResumeButton.setFocusable(false);

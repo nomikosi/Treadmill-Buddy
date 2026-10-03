@@ -5,7 +5,6 @@ import com.intellij.ui.JBColor;
 import com.intellij.util.ui.JBUI;
 import com.intellij.util.ui.UIUtil;
 
-import javax.swing.JComponent;
 import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Graphics;
@@ -23,7 +22,7 @@ import java.util.Map;
  * (oldest left), rows are Monday through Sunday; the rightmost column is the
  * current week. Cell intensity scales with the day's distance.
  */
-public final class ActivityHeatmap extends JComponent {
+public final class ActivityHeatmap extends PaintedComponent {
     private static final int WEEKS = 26;
     private static final Color EMPTY = new JBColor(new Color(0xEBEDF0), new Color(0x2B2D30));
     private static final Color[] LEVELS = {
@@ -47,6 +46,7 @@ public final class ActivityHeatmap extends JComponent {
         int height = JBUI.scale(7 * 9 + 2) + labelHeight();
         setPreferredSize(new Dimension(JBUI.scale(WEEKS * 9), height));
         setMaximumSize(new Dimension(Integer.MAX_VALUE, height));
+        getAccessibleContext().setAccessibleName(TreadmillBundle.message("heatmap.accessibleName", WEEKS));
     }
 
     private static int labelHeight() {

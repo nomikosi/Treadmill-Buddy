@@ -1,8 +1,8 @@
 package com.codex.desktreadmill.ui;
 
+import com.codex.desktreadmill.TreadmillBundle;
 import com.intellij.ui.JBColor;
 
-import javax.swing.JComponent;
 import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Dimension;
@@ -12,7 +12,7 @@ import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 
-public final class DigitalClockDisplay extends JComponent {
+public final class DigitalClockDisplay extends PaintedComponent {
     private static final Color BACKGROUND = new JBColor(new Color(238, 243, 247), new Color(43, 45, 48));
     private static final Color SEGMENT_ON = new JBColor(new Color(32, 38, 58), new Color(220, 226, 240));
     private static final Color SEGMENT_OFF = new JBColor(new Color(216, 224, 232), new Color(62, 66, 72));
@@ -26,12 +26,20 @@ public final class DigitalClockDisplay extends JComponent {
         setBackground(BACKGROUND);
         setPreferredSize(new Dimension(460, 145));
         setMinimumSize(new Dimension(320, 110));
+        updateAccessibleName();
     }
 
     public void setDisplay(String dayPrefix, String timeText) {
         this.dayPrefix = dayPrefix == null ? "" : dayPrefix;
         this.timeText = timeText == null ? "00:00:00" : timeText;
+        updateAccessibleName();
         repaint();
+    }
+
+    /** Painted segments say nothing to a screen reader; the accessible name carries the time as text. */
+    private void updateAccessibleName() {
+        String shown = dayPrefix.isBlank() ? timeText : dayPrefix + " " + timeText;
+        getAccessibleContext().setAccessibleName(TreadmillBundle.message("clock.accessibleName", shown));
     }
 
     @Override

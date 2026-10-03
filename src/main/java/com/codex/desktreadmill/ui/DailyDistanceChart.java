@@ -1,9 +1,9 @@
 package com.codex.desktreadmill.ui;
 
+import com.codex.desktreadmill.TreadmillBundle;
 import com.intellij.ui.JBColor;
 import com.intellij.util.ui.JBUI;
 
-import javax.swing.JComponent;
 import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Graphics;
@@ -13,7 +13,7 @@ import java.awt.RenderingHints;
 /**
  * Minimal bar chart of daily walking distance; the rightmost bar is today.
  */
-public final class DailyDistanceChart extends JComponent {
+public final class DailyDistanceChart extends PaintedComponent {
     private static final Color BAR = new JBColor(new Color(0x9BB6D3), new Color(0x4B6478));
     private static final Color BAR_TODAY = new JBColor(new Color(0x3574F0), new Color(0x548AF7));
     private static final Color BASELINE = JBColor.border();
@@ -26,6 +26,8 @@ public final class DailyDistanceChart extends JComponent {
         setMinimumSize(new Dimension(100, JBUI.scale(30)));
         // BoxLayout stretches components to their maximum size; keep the height fixed.
         setMaximumSize(new Dimension(Integer.MAX_VALUE, JBUI.scale(44)));
+        // The numbers themselves are in the stats line below, which reads as text.
+        getAccessibleContext().setAccessibleName(TreadmillBundle.message("panel.chart.accessibleName"));
     }
 
     public void setData(double[] dailyKm) {

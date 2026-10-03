@@ -1,6 +1,6 @@
 # Treadmill Buddy
 
-![Treadmill Buddy hero](docs/treadmill-buddy.png)
+![Treadmill Buddy: a desk treadmill with a laptop and a friendly green mascot](docs/treadmill-buddy.jpg)
 
 Treadmill Buddy is a JetBrains IDE plugin for developers who use an under-desk treadmill while they work. It keeps a digital stopwatch inside the IDE, estimates calories, tracks distance and steps, and helps you save walking sessions without leaving your coding flow.
 
@@ -122,9 +122,9 @@ Source layout: `engine` holds the workout clock and its trackers (goals, records
 
 ## Releasing
 
-Release notes are maintained in the [plugin descriptor](src/main/resources/META-INF/plugin.xml); pending changes appear under Unreleased until the next version is prepared.
+Release notes live in [CHANGELOG.md](CHANGELOG.md), the only copy: the build renders the section for the version it builds into the plugin's change notes. Add entries under `## [Unreleased]` as you go. To prepare a release, set `version` in `build.gradle` and run `./gradlew patchChangelog`, which moves the Unreleased entries under a heading for that version.
 
-Pushing a `v*` tag runs the release workflow, which builds, signs, and publishes the plugin to JetBrains Marketplace. It needs these repository secrets: `PUBLISH_TOKEN` (Marketplace permanent token), `CERTIFICATE_CHAIN`, `PRIVATE_KEY`, and `PRIVATE_KEY_PASSWORD` (plugin signing, see the [JetBrains signing guide](https://plugins.jetbrains.com/docs/intellij/plugin-signing.html)).
+Pushing a `v*` tag runs the release workflow. It stops early if the tag doesn't match `build.gradle` or `CHANGELOG.md` has no notes for the version. Otherwise it builds, verifies, signs, and publishes the plugin to JetBrains Marketplace, then creates a GitHub release with the signed ZIP and the same notes. It needs these repository secrets: `PUBLISH_TOKEN` (Marketplace permanent token), `CERTIFICATE_CHAIN`, `PRIVATE_KEY`, and `PRIVATE_KEY_PASSWORD` (plugin signing, see the [JetBrains signing guide](https://plugins.jetbrains.com/docs/intellij/plugin-signing.html)).
 
 ## License
 

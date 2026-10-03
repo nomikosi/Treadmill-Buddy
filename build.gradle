@@ -1,8 +1,10 @@
+import org.jetbrains.changelog.Changelog
 import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 
 plugins {
     id 'java'
     id 'org.jetbrains.intellij.platform' version '2.19.0'
+    id 'org.jetbrains.changelog' version '2.5.0'
 }
 
 group = 'com.codex'
@@ -40,6 +42,11 @@ test {
     useJUnitPlatform()
 }
 
+// CHANGELOG.md: plain bullet lists under "## [x.y.z]" headings, no Added/Fixed groups.
+changelog {
+    groups.empty()
+}
+
 intellijPlatform {
     // Indexes the settings page's labels, so Settings search finds
     // "auto-pause" or "weight" and not just the page title.
@@ -48,8 +55,14 @@ intellijPlatform {
         id = 'com.codex.desktreadmill'
         name = 'Treadmill Buddy'
         version = project.version
-        // The description and change notes live in plugin.xml only; setting
-        // them here as well let the two copies drift apart.
+        // One copy of each, so they can't drift apart: the description lives
+        // in plugin.xml, the change notes in CHANGELOG.md, rendered from the
+        // section for this version (or Unreleased, before it has one).
+        changeNotes = provider {
+            def item = changelog.getOrNull(project.version.toString()) ?: changelog.getUnreleased()
+            changelog.renderItem(item.withHeader(false).withEmptySections(false), Changelog.OutputType.HTML) +
+                    '<p><a href="https://github.com/nomikosi/Treadmill-Buddy/blob/master/CHANGELOG.md">Full changelog</a></p>'
+        }
         ideaVersion {
             sinceBuild = '243'
             untilBuild = provider { null }

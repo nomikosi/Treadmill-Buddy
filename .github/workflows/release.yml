@@ -1,6 +1,8 @@
 name: Release
 
-# Publishes to JetBrains Marketplace when a version tag (v1.2.3) is pushed.
+# Publishes to JetBrains Marketplace when a version tag (v1.2.3) is pushed,
+# then creates a GitHub release with the signed ZIP and the version's notes
+# from CHANGELOG.md.
 # Requires repository secrets:
 #   PUBLISH_TOKEN            - JetBrains Marketplace permanent token
 #   CERTIFICATE_CHAIN        - plugin signing certificate chain (PEM)
@@ -12,8 +14,9 @@ on:
     tags:
       - 'v*'
 
-# Publishing uses the Marketplace token, not GitHub's; this job only reads
-# the repository, so the token it runs with can't write to it either.
+# Publishing uses the Marketplace token, not GitHub's, so the build job's
+# token only reads the repository. Only the github-release job, which runs
+# no build tools and sees no secrets, may write to it.
 permissions:
   contents: read
 
@@ -65,6 +68,19 @@ jobs:
             exit 1
           fi
 
+      # The Marketplace change notes and the GitHub release both come from
+      # this version's section in CHANGELOG.md; without one, the release
+      # would ship with the Unreleased notes or none at all.
+      - name: Check that CHANGELOG.md has notes for this version
+        run: |
+          mkdir -p build
+          ./gradlew getChangelog --project-version="${GITHUB_REF_NAME#v}" \
+            --no-header --no-links --no-empty-sections --output-file=build/release-notes.md
+          if [ ! -s build/release-notes.md ]; then
+            echo "::error::CHANGELOG.md has no notes under ## [${GITHUB_REF_NAME#v}]." >&2
+            exit 1
+          fi
+
       - name: Build and test
         run: ./gradlew build
 
@@ -89,11 +105,36 @@ jobs:
           PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
         run: ./gradlew publishPlugin
 
-      # A workflow artifact, downloadable from the run page - this workflow
-      # does not create a GitHub release. Only the signed ZIP is kept; the
-      # unsigned intermediate is not what users should install.
+      # Downloadable from the run page, and handed to the github-release job.
+      # Only the signed ZIP is kept; the unsigned intermediate is not what
+      # users should install.
       - name: Upload the signed plugin distribution as a workflow artifact
         uses: actions/upload-artifact@v7
         with:
           name: plugin-distribution
-          path: build/distributions/*-signed.zip
+          path: |
+            build/distributions/*-signed.zip
+            build/release-notes.md
+
+  # A job of its own so the only step that can write to the repository runs
+  # without the build tools and the signing and publishing secrets.
+  github-release:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: plugin-distribution
+          path: release
+
+      - name: Create the GitHub release with the signed plugin
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" release/distributions/*-signed.zip \
+            --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag \
+            --title "Treadmill Buddy ${GITHUB_REF_NAME#v}" \
+            --notes-file release/release-notes.md
