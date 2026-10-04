@@ -27,6 +27,7 @@ import com.intellij.ui.SimpleTextAttributes;
 import com.intellij.ui.ToolbarDecorator;
 import com.intellij.ui.components.JBList;
 import com.intellij.ui.speedSearch.SpeedSearchSupply;
+import com.intellij.util.ui.JBUI;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -125,6 +126,10 @@ public final class SavedSessionsPanel {
         });
         sessionsList.getEmptyText().setText(TreadmillBundle.message("sessions.empty"));
         sessionsList.setVisibleRowCount(5);
+        // A modest preferred width: the longest row used to set it, which made the
+        // whole tool window scroll sideways. Rows still span the list's actual
+        // width, and JBList shows a clipped row in full on hover.
+        sessionsList.setFixedCellWidth(JBUI.scale(160));
         sessionsList.setToolTipText(TreadmillBundle.message("sessions.tooltip"));
         new DoubleClickListener() {
             @Override

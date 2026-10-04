@@ -6,6 +6,7 @@ import com.codex.desktreadmill.model.GoalType;
 import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.UnitSystem;
 import com.codex.desktreadmill.settings.TreadmillSettings;
+import com.intellij.openapi.util.text.StringUtil;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.util.ui.JBUI;
 import com.intellij.util.ui.UIUtil;
@@ -109,10 +110,13 @@ public final class StatsPanel extends JPanel {
             streakText += TreadmillBundle.message("panel.streak.atRisk");
         }
         String unit = currentUnits.distanceUnit();
-        statsLabel.setText(TreadmillBundle.message("stats.today", distance(today, currentUnits), unit, kcal(today))
-                + SEPARATOR + TreadmillBundle.message("stats.week", distance(week, currentUnits), unit, kcal(week))
-                + SEPARATOR + TreadmillBundle.message("stats.allTime", distance(allTime, currentUnits), unit, kcal(allTime))
-                + streakText);
+        // Two lines: on one, the totals and streak ran wider than a typical tool
+        // window and made the whole panel scroll sideways.
+        statsLabel.setText(twoLines(
+                TreadmillBundle.message("stats.today", distance(today, currentUnits), unit, kcal(today))
+                        + SEPARATOR + TreadmillBundle.message("stats.week", distance(week, currentUnits), unit, kcal(week)),
+                TreadmillBundle.message("stats.allTime", distance(allTime, currentUnits), unit, kcal(allTime))
+                        + streakText));
 
         applyGoalProgress(goalProgressBar, TreadmillBundle.message("panel.goal.daily"),
                 settings.getDailyGoalType(), settings.getDailyGoalValue(), today, currentUnits);
@@ -144,6 +148,15 @@ public final class StatsPanel extends JPanel {
     }
 
     private static final String SEPARATOR = "   |   ";
+
+    /** Centered label text that breaks only between the two lines, never inside one. */
+    static String twoLines(String first, String second) {
+        return "<html><center>" + nonBreaking(first) + "<br>" + nonBreaking(second) + "</center></html>";
+    }
+
+    private static String nonBreaking(String text) {
+        return StringUtil.escapeXmlEntities(text).replace(" ", "&nbsp;");
+    }
 
     private static String distance(SessionStats.Totals totals, UnitSystem units) {
         return String.format("%.1f", units.distanceFromKm(totals.distanceKm));
