@@ -22,16 +22,30 @@ limitations under the License.
 
     <!-- The single source of the Marketplace description; build.gradle no longer overrides it. -->
     <description><![CDATA[
-        <p><b>Treadmill Buddy</b> is a digital stopwatch for developers who walk while they code.</p>
-        <p>Track under-desk treadmill sessions from inside any JetBrains IDE with a large digital clock, a status bar widget, a floating movable clock, saved sessions, distance, steps, calories, and goal countdowns.</p>
+        <p>Walking pad and treadmill desk tracker: time, distance, steps, and calories for every walk while you code.</p>
+        <p><b>Treadmill Buddy</b> is a workout timer, step counter, and calorie tracker for an under-desk treadmill or a walking pad under your standing desk. It runs in every JetBrains IDE, with a large digital clock in its tool window, a status bar widget, and a floating clock that can stay on top.</p>
+        <p><b>Four workout modes</b></p>
         <ul>
-            <li><b>Marathon:</b> open-ended count-up sessions.</li>
-            <li><b>Calorie burn:</b> count down from the time needed to burn a calorie target.</li>
-            <li><b>KG burn:</b> count down from the time needed to burn a target mass in kg.</li>
-            <li><b>Interval walk:</b> alternating walk/break blocks with a chime at each switch.</li>
+            <li><b>Marathon:</b> an open-ended stopwatch that counts up.</li>
+            <li><b>Calorie burn:</b> counts down the time needed to burn a calorie target.</li>
+            <li><b>KG burn:</b> counts down the time needed to burn a target body mass, in kg or lb.</li>
+            <li><b>Interval walk:</b> Pomodoro-style walking and break blocks, such as 25 and 5 minutes, with a chime at each switch.</li>
         </ul>
-        <p>The plugin includes metric and imperial units, selectable calorie algorithms with incline support, optional daily and weekly goals with progress tracking, speed presets, per-speed session breakdowns, personal records, a Settings page for profile/defaults, live speed and incline recalculation, cross-IDE session history with CSV/JSON/TCX export and CSV/JSON import, daily/weekly/all-time totals with a 14-day chart, a six-month activity heatmap, streaks with configurable rest days, move reminders, and configurable auto-pause after inactivity.</p>
-        <p>License: Apache License 2.0</p>
+        <p><b>Fitness and health tracking</b></p>
+        <ul>
+            <li>Daily and weekly goals for steps, distance, or calories, with progress bars.</li>
+            <li>Today, last-7-days, and all-time totals, a 14-day distance chart, a six-month activity heatmap, and a walking streak with configurable rest days.</li>
+            <li>Personal records for the longest session and the best day's distance and steps.</li>
+            <li>Optional move reminders after a set time at the keyboard without walking.</li>
+            <li>Steps and calories are estimated from your speed, height, and weight.</li>
+        </ul>
+        <p><b>Made for walking while you code</b></p>
+        <ul>
+            <li>Auto-pause when the keyboard and mouse go idle, and resume as soon as you type again.</li>
+            <li>Metric or imperial units, speed presets, and four calorie algorithms, including an incline-aware treadmill model.</li>
+            <li>One session history shared by all your JetBrains IDEs, with CSV and JSON import and export, and TCX export for fitness apps.</li>
+        </ul>
+        <p>Open source under the Apache License 2.0. Source code and issue tracker: <a href="https://github.com/nomikosi/Treadmill-Buddy">GitHub</a>.</p>
     ]]></description>
 
     <!-- The change notes are rendered from CHANGELOG.md at build time; edit them there. -->

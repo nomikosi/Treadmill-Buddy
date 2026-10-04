@@ -4,6 +4,10 @@ The build renders the section for the version it builds into the plugin's change
 
 ## [Unreleased]
 
+## [1.3.1]
+
+- A clearer plugin description. The plugin itself is unchanged.
+
 ## [1.3.0]
 
 - New leaves the clock empty: opening the tool window afterwards, in any project or after a restart, no longer loads the previous walk back, and the form offers a fresh name instead of the old one.
