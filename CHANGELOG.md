@@ -4,6 +4,8 @@ The build renders the section for the version it builds into the plugin's change
 
 ## [Unreleased]
 
+## [1.3.2]
+
 - The tool window no longer scrolls sideways at common widths. Saved-session rows that don't fit are cut off at the edge and show in full on hover, and the totals and streak line under the heatmap now takes two lines.
 
 ## [1.3.1]
