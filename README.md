@@ -4,6 +4,8 @@
 
 Treadmill Buddy is a JetBrains IDE plugin for developers who use an under-desk treadmill while they work. It keeps a digital stopwatch inside the IDE, estimates calories, tracks distance and steps, and helps you save walking sessions without leaving your coding flow.
 
+![Treadmill Buddy beside the editor in IntelliJ IDEA: a calorie-burn countdown with distance, steps, and calories, daily and weekly goal progress, a 14-day distance chart, and a six-month activity heatmap](docs/screenshots/1-track-your-walk.png)
+
 ## What It Does
 
 - Opens a `Treadmill Buddy` tool window inside the IDE.
@@ -43,6 +45,8 @@ Counts down from the estimated time needed to burn a target body mass (kg, or lb
 `Interval walk`
 
 Alternates walking and break blocks (for example 25 minutes walking, 5 minutes standing) with a chime and notification at each switch. The clock counts down the current block; distance, steps, and calories accumulate only while walking.
+
+![An interval walk switching to its break: the clock counts down the five-minute break and a notification reads "Walk block done - Take a break - 5 minutes off your feet."](docs/screenshots/4-interval-walks.png)
 
 ## Calorie Algorithms
 
