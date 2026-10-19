@@ -1,13 +1,16 @@
 name: Release
 
-# Publishes to JetBrains Marketplace when a version tag (v1.2.3) is pushed,
-# then creates a GitHub release with the signed ZIP and the version's notes
+# Runs when a version tag (v1.2.3) is pushed: builds and verifies the plugin,
+# publishes it to JetBrains Marketplace when the publishing secrets are set,
+# and creates a GitHub release with the plugin ZIP and the version's notes
 # from CHANGELOG.md.
-# Requires repository secrets:
+# Optional repository secrets - all four, or none:
 #   PUBLISH_TOKEN            - JetBrains Marketplace permanent token
 #   CERTIFICATE_CHAIN        - plugin signing certificate chain (PEM)
 #   PRIVATE_KEY              - plugin signing private key (PEM)
 #   PRIVATE_KEY_PASSWORD     - password for the private key
+# Without them the release carries the unsigned ZIP, to upload to the
+# Marketplace by hand.
 
 on:
   push:
@@ -26,10 +29,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Fail in seconds, not after a full build and verification: a missing
-      # token only surfaces at publishPlugin, and missing signing secrets
-      # merely skip signPlugin - which would publish an unsigned build.
-      - name: Check that the publishing secrets are configured
+      # All four or none, decided in seconds rather than after a full build:
+      # a token without the signing secrets would publish an unsigned build,
+      # since missing signing secrets merely skip signPlugin.
+      - name: Check the publishing secrets
+        id: secrets
         env:
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
           CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
@@ -42,8 +46,13 @@ jobs:
               missing="${missing} ${name}"
             fi
           done
-          if [ -n "${missing}" ]; then
-            echo "::error::Missing repository secrets:${missing}. Add them under Settings > Secrets and variables > Actions (names must match exactly), then re-run this workflow." >&2
+          if [ -z "${missing}" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          elif [ "${missing}" = " PUBLISH_TOKEN CERTIFICATE_CHAIN PRIVATE_KEY PRIVATE_KEY_PASSWORD" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No publishing secrets: the GitHub release gets the unsigned ZIP, to upload to JetBrains Marketplace by hand."
+          else
+            echo "::error::Only some publishing secrets are set; missing:${missing}. Add the rest under Settings > Secrets and variables > Actions (names must match exactly), or remove them all to release without publishing." >&2
             exit 1
           fi
 
@@ -82,7 +91,7 @@ jobs:
           fi
 
       - name: Build and test
-        run: ./gradlew build
+        run: ./gradlew build buildPlugin
 
       # The Marketplace runs the verifier after upload and can reject the
       # build then; catching a compatibility problem here keeps a broken
@@ -97,7 +106,8 @@ jobs:
           name: plugin-verifier-reports
           path: build/reports/pluginVerifier
 
-      - name: Publish plugin
+      - name: Sign and publish to JetBrains Marketplace
+        if: steps.secrets.outputs.publish == 'true'
         env:
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
           CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
@@ -105,16 +115,27 @@ jobs:
           PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
         run: ./gradlew publishPlugin
 
+      # Exactly one ZIP per release: the signed one when the plugin was
+      # published, otherwise the unsigned one.
+      - name: Collect the release files
+        env:
+          PUBLISHED: ${{ steps.secrets.outputs.publish }}
+        run: |
+          mkdir -p build/release
+          if [ "${PUBLISHED}" = "true" ]; then
+            cp build/distributions/*-signed.zip build/release/
+          else
+            cp build/distributions/*.zip build/release/
+          fi
+          cp build/release-notes.md build/release/
+          ls -l build/release
+
       # Downloadable from the run page, and handed to the github-release job.
-      # Only the signed ZIP is kept; the unsigned intermediate is not what
-      # users should install.
-      - name: Upload the signed plugin distribution as a workflow artifact
+      - name: Upload the release files as a workflow artifact
         uses: actions/upload-artifact@v7
         with:
           name: plugin-distribution
-          path: |
-            build/distributions/*-signed.zip
-            build/release-notes.md
+          path: build/release
 
   # A job of its own so the only step that can write to the repository runs
   # without the build tools and the signing and publishing secrets.
@@ -129,11 +150,11 @@ jobs:
           name: plugin-distribution
           path: release
 
-      - name: Create the GitHub release with the signed plugin
+      - name: Create the GitHub release with the plugin ZIP
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" release/distributions/*-signed.zip \
+          gh release create "${GITHUB_REF_NAME}" release/*.zip \
             --repo "${GITHUB_REPOSITORY}" \
             --verify-tag \
             --title "Treadmill Buddy ${GITHUB_REF_NAME#v}" \
