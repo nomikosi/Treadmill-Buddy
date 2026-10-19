@@ -38,6 +38,8 @@ import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
+import java.awt.Component;
+import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.GridLayout;
@@ -87,7 +89,21 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
     private final JButton resetButton = new JButton(TreadmillBundle.message("button.reset"));
     private final JButton newButton = new JButton(TreadmillBundle.message("button.new"));
     private final CardLayout targetCards = new CardLayout();
-    private final JPanel targetPanel = new JPanel(targetCards);
+    /**
+     * Sized to the card on show: CardLayout reserves room for its tallest card,
+     * which left the interval fields' worth of blank space under every other mode.
+     */
+    private final JPanel targetPanel = new JPanel(targetCards) {
+        @Override
+        public Dimension getPreferredSize() {
+            for (Component card : getComponents()) {
+                if (card.isVisible()) {
+                    return card.getPreferredSize();
+                }
+            }
+            return super.getPreferredSize();
+        }
+    };
     private final FloatingClockWindow floatingClock;
 
     private boolean populatingFields;
@@ -328,12 +344,18 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
             return;
         }
         SessionMode mode = selectedMode();
-        targetCards.show(targetPanel, mode.name());
+        showTargetCard(mode.name());
         // Clear first: a name typed into the field is pushed to the engine,
         // and would otherwise rename the session being dropped.
         engine.clearSession();
         showDefaultName(mode);
         updateDisplay();
+    }
+
+    private void showTargetCard(String modeId) {
+        targetCards.show(targetPanel, modeId);
+        // The panel's height follows the card, so the form has to lay out again.
+        targetPanel.revalidate();
     }
 
     private void toggleRunning() {
@@ -618,7 +640,7 @@ public final class TreadmillPanel extends JPanel implements WorkoutEngine.Listen
         populatingFields = true;
         try {
             modeCombo.setSelectedItem(SessionMode.fromId(session.modeId));
-            targetCards.show(targetPanel, session.modeId);
+            showTargetCard(session.modeId);
             sessionNameField.setText(session.name);
             speedField.setText(speedInput.display(session.speedKmh, currentUnits));
             inclineField.setText(session.inclinePercent > 0 ? format(session.inclinePercent) : "0");

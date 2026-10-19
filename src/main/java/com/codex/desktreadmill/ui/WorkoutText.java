@@ -7,6 +7,9 @@ import com.codex.desktreadmill.model.UnitSystem;
 import com.intellij.openapi.util.text.StringUtil;
 import org.jetbrains.annotations.Nullable;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+
 /** The tool window's metric texts, in the display units the caller passes. */
 final class WorkoutText {
     private WorkoutText() {
@@ -34,9 +37,14 @@ final class WorkoutText {
                 String.format("%.2f", units.weightFromKg(kg)), units.weightUnit());
     }
 
-    /** An editable speed in display units, blank for a speed that isn't set. */
+    /**
+     * A speed in display units, up to two decimals without trailing zeros, so a
+     * breakdown reads "4 km/h" and "4.5 km/h" rather than "4" next to "4.50".
+     * Blank for a speed that isn't set.
+     */
     static String speed(double kmh, UnitSystem units) {
-        return kmh <= 0 ? "" : NumericInput.format(units.speedFromKmh(kmh), 2);
+        return kmh <= 0 ? "" : BigDecimal.valueOf(units.speedFromKmh(kmh))
+                .setScale(2, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
     }
 
     /** Multi-speed sessions get a per-speed breakdown tooltip on the distance tile. */

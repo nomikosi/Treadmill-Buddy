@@ -33,6 +33,8 @@ public final class TreadmillNotifications {
 
     /** Plain info balloons close themselves after this long. */
     private static final int INFO_AUTO_CLOSE_MILLIS = 2_500;
+    /** Walk/break switches stay long enough to be seen at the end of a sentence; the beep alone is easy to miss. */
+    private static final int TRANSIENT_AUTO_CLOSE_MILLIS = 10_000;
     /** Balloons with a clickable action stay longer - closing at info speed would snatch the action away. */
     private static final int ACTION_AUTO_CLOSE_MILLIS = 10_000;
 
@@ -51,7 +53,7 @@ public final class TreadmillNotifications {
     /** For notices that are worthless once read; leaves nothing behind. */
     public static void transientInfo(String title, String content) {
         Notification notification = post(null, title, content, null, null);
-        closeAfter(notification, INFO_AUTO_CLOSE_MILLIS, true);
+        closeAfter(notification, TRANSIENT_AUTO_CLOSE_MILLIS, true);
     }
 
     public static void withUndo(@Nullable Project project, String content, Runnable undo) {

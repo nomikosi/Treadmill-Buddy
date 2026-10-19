@@ -31,4 +31,12 @@ class WorkoutTextTest {
         assertEquals("1.00 mi", WorkoutText.distance(1.609344, UnitSystem.IMPERIAL).replace(',', '.'));
         assertEquals("", WorkoutText.speed(0, UnitSystem.METRIC), "an unset speed stays blank");
     }
+
+    @Test
+    void speedsDropTrailingZerosSoABreakdownReadsEvenly() {
+        assertEquals("4", WorkoutText.speed(4.0, UnitSystem.METRIC));
+        assertEquals("4.5", WorkoutText.speed(4.5, UnitSystem.METRIC), "used to read 4.50 next to a plain 4");
+        assertEquals("4.25", WorkoutText.speed(4.25, UnitSystem.METRIC));
+        assertEquals("3", WorkoutText.speed(4.828032, UnitSystem.IMPERIAL));
+    }
 }

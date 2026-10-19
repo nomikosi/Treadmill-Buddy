@@ -31,8 +31,8 @@ public final class StatsPanel extends JPanel {
     private final TreadmillSettings settings;
     private final DailyDistanceChart dailyChart = new DailyDistanceChart();
     private final ActivityHeatmap heatmap = new ActivityHeatmap();
-    private final JProgressBar goalProgressBar = new JProgressBar(0, 100);
-    private final JProgressBar weeklyGoalProgressBar = new JProgressBar(0, 100);
+    private final GoalMeter dailyGoal = new GoalMeter();
+    private final GoalMeter weeklyGoal = new GoalMeter();
     private final JBLabel statsLabel = new JBLabel();
     private final JBLabel statusLabel = new JBLabel(TreadmillBundle.message("status.ready"));
 
@@ -44,20 +44,14 @@ public final class StatsPanel extends JPanel {
         statsLabel.setForeground(UIUtil.getContextHelpForeground());
         statusLabel.setHorizontalAlignment(SwingConstants.CENTER);
         dailyChart.setToolTipText(TreadmillBundle.message("panel.chart.tooltip"));
-        goalProgressBar.setStringPainted(true);
-        goalProgressBar.setVisible(false);
-        goalProgressBar.setAlignmentX(CENTER_ALIGNMENT);
-        weeklyGoalProgressBar.setStringPainted(true);
-        weeklyGoalProgressBar.setVisible(false);
-        weeklyGoalProgressBar.setAlignmentX(CENTER_ALIGNMENT);
         dailyChart.setAlignmentX(CENTER_ALIGNMENT);
         heatmap.setAlignmentX(CENTER_ALIGNMENT);
         heatmap.setVisible(false);
         statsLabel.setAlignmentX(CENTER_ALIGNMENT);
         statusLabel.setAlignmentX(CENTER_ALIGNMENT);
-        add(goalProgressBar);
+        add(dailyGoal);
         add(Box.createVerticalStrut(4));
-        add(weeklyGoalProgressBar);
+        add(weeklyGoal);
         add(Box.createVerticalStrut(4));
         add(dailyChart);
         add(Box.createVerticalStrut(4));
@@ -118,18 +112,18 @@ public final class StatsPanel extends JPanel {
                 TreadmillBundle.message("stats.allTime", distance(allTime, currentUnits), unit, kcal(allTime))
                         + streakText));
 
-        applyGoalProgress(goalProgressBar, TreadmillBundle.message("panel.goal.daily"),
+        applyGoalProgress(dailyGoal, TreadmillBundle.message("panel.goal.daily"),
                 settings.getDailyGoalType(), settings.getDailyGoalValue(), today, currentUnits);
         GoalType weeklyType = settings.getWeeklyGoalType();
         if (weeklyType == GoalType.NONE || settings.getWeeklyGoalValue() <= 0) {
-            weeklyGoalProgressBar.setVisible(false);
+            weeklyGoal.setVisible(false);
         } else {
             long startOfCalendarWeek = todayDate.with(DayOfWeek.MONDAY)
                     .atStartOfDay(zone).toInstant().toEpochMilli();
             SessionStats.Totals thisWeek = SessionStats.totalsSince(sessions, startOfCalendarWeek);
             // "(Mon-Sun)" because the stats line's "7 days" is a rolling window;
             // labeling the difference beats leaving readers to guess.
-            applyGoalProgress(weeklyGoalProgressBar, TreadmillBundle.message("panel.goal.weekly"),
+            applyGoalProgress(weeklyGoal, TreadmillBundle.message("panel.goal.weekly"),
                     weeklyType, settings.getWeeklyGoalValue(), thisWeek, currentUnits);
         }
 
@@ -167,20 +161,55 @@ public final class StatsPanel extends JPanel {
     }
 
     private static void applyGoalProgress(
-            JProgressBar bar, String label, GoalType goalType, double target,
+            GoalMeter meter, String label, GoalType goalType, double target,
             SessionStats.Totals totals, UnitSystem currentUnits
     ) {
         if (goalType == GoalType.NONE || target <= 0) {
-            bar.setVisible(false);
+            meter.setVisible(false);
             return;
         }
         double progress = SessionStats.goalProgress(goalType, totals);
         int percent = (int) Math.max(0, Math.min(100, Math.round(progress / target * 100)));
-        bar.setVisible(true);
-        bar.setValue(percent);
-        bar.setString(label + ": "
+        meter.display(label + ": "
                 + goalType.formatValue(progress, currentUnits)
                 + " / " + goalType.formatValue(target, currentUnits)
-                + " (" + percent + "%)");
+                + " (" + percent + "%)", percent);
+    }
+
+    /**
+     * A goal's text over a plain bar. Painted inside the bar, the text turned dim
+     * wherever it ran past the filled part - most of it early in the day.
+     */
+    static final class GoalMeter extends JPanel {
+        private final JBLabel label = new JBLabel();
+        private final JProgressBar bar = new JProgressBar(0, 100);
+
+        GoalMeter() {
+            setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
+            setOpaque(false);
+            setAlignmentX(CENTER_ALIGNMENT);
+            label.setFont(JBUI.Fonts.smallFont());
+            label.setAlignmentX(CENTER_ALIGNMENT);
+            label.setLabelFor(bar);
+            bar.setAlignmentX(CENTER_ALIGNMENT);
+            add(label);
+            add(Box.createVerticalStrut(2));
+            add(bar);
+            setVisible(false);
+        }
+
+        void display(String text, int percent) {
+            label.setText(text);
+            bar.setValue(percent);
+            setVisible(true);
+        }
+
+        String text() {
+            return label.getText();
+        }
+
+        JProgressBar bar() {
+            return bar;
+        }
     }
 }

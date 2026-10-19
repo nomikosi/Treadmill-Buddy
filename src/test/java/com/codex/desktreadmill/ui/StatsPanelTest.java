@@ -1,5 +1,6 @@
 package com.codex.desktreadmill.ui;
 
+import com.codex.desktreadmill.model.GoalType;
 import com.codex.desktreadmill.model.SessionData;
 import com.codex.desktreadmill.model.UnitSystem;
 import com.codex.desktreadmill.settings.TreadmillSettings;
@@ -17,6 +18,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -44,6 +46,33 @@ class StatsPanelTest {
             assertTrue(totals.getPreferredSize().width < oneLineWidth * 0.7,
                     "on one line the totals set the panel's width and the tool window scrolled sideways: "
                             + totals.getPreferredSize().width + " vs " + oneLineWidth);
+        });
+    }
+
+    @Test
+    void goalTextSitsAboveItsBarSoItNeverTurnsDim() throws Exception {
+        TreadmillSettings settings = new TreadmillSettings(directory.resolve("sessions.json"));
+        settings.setDailyGoalType(GoalType.STEPS);
+        settings.setDailyGoalValue(80_000);
+        SwingUtilities.invokeAndWait(() -> {
+            StatsPanel panel = new StatsPanel(settings);
+            panel.update(dailyWalks(1), UnitSystem.METRIC);
+
+            StatsPanel.GoalMeter daily = null;
+            for (Component child : panel.getComponents()) {
+                if (child instanceof StatsPanel.GoalMeter meter) {
+                    daily = meter;
+                    break;
+                }
+            }
+            assertNotNull(daily);
+            assertTrue(daily.isVisible());
+            // 5,750 of 80,000 steps: a 7% fill, under which painted text was mostly dim.
+            assertEquals(7, daily.bar().getValue());
+            assertFalse(daily.bar().isStringPainted());
+            assertTrue(daily.text().startsWith("Daily goal") && daily.text().endsWith("(7%)"), daily.text());
+            assertEquals(daily.text(), daily.bar().getAccessibleContext().getAccessibleName(),
+                    "screen readers announce the bar with its goal text");
         });
     }
 

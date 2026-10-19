@@ -4,9 +4,11 @@ The build renders the section for the version it builds into the plugin's change
 
 ## [Unreleased]
 
-## [1.3.2]
-
 - The tool window no longer scrolls sideways at common widths. Saved-session rows that don't fit are cut off at the edge and show in full on hover, and the totals and streak line under the heatmap now takes two lines.
+- The walk and break balloons of an interval walk stay up for 10 seconds instead of 2.5, so they are still there when you look up.
+- Speeds drop trailing zeros: the speed breakdown and speed presets read 4.5 km/h instead of 4.50 km/h next to a plain 4 km/h.
+- The session form no longer leaves an empty gap under its fields in Marathon, Calorie burn, and KG burn mode.
+- Goal progress text sits above its bar, so it stays readable however little of the bar is filled.
 
 ## [1.3.1]
 
